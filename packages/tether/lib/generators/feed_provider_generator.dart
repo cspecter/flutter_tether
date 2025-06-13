@@ -53,6 +53,11 @@ class FeedStreamNotifierSettings<TModel extends TetherModel<TModel>>
     ClientManagerFilterBuilder<TModel> baseQuery,
   )?
   queryCustomizer; // This can define the "base filtered view"
+  
+  // New ordering fields
+  final TetherColumn? defaultOrderColumn;
+  final bool defaultOrderAscending;
+  final bool defaultOrderNullsFirst;
 
   const FeedStreamNotifierSettings({
     required this.feedKey,
@@ -62,6 +67,9 @@ class FeedStreamNotifierSettings<TModel extends TetherModel<TModel>>
     required this.fromJsonFactory,
     this.pageSize = 20,
     this.queryCustomizer,
+    this.defaultOrderColumn, // Add default ordering column
+    this.defaultOrderAscending = true, // Default to ascending order
+    this.defaultOrderNullsFirst = false, // Default to nulls last
   });
 
   @override
@@ -73,6 +81,9 @@ class FeedStreamNotifierSettings<TModel extends TetherModel<TModel>>
     selectArgs, // Relies on stable identity (e.g., const)
     fromJsonFactory, // Static methods have stable identity
     queryCustomizer, // Needs stable identity if provided
+    defaultOrderColumn, // Add to props
+    defaultOrderAscending,
+    defaultOrderNullsFirst,
   ];
 }
 
@@ -94,6 +105,11 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     ClientManagerFilterBuilder<TModel> query,
   )?
   _dynamicFilterApplicator;
+  
+  // New ordering state variables
+  TetherColumn? _orderColumn;
+  bool _orderAscending = true;
+  bool _orderNullsFirst = false;
 
   FeedStreamNotifier() {
     // Initialization in build
@@ -119,6 +135,16 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     if (_currentSettings.searchColumn != null && terms.isNotEmpty) {
       query = query.textSearch(_currentSettings.searchColumn!, terms);
     }
+    
+    // 5. Apply ordering if set
+    if (_orderColumn != null) {
+      query = query.order(
+        _orderColumn!, 
+        ascending: _orderAscending, 
+        nullsFirst: _orderNullsFirst
+      ) as ClientManagerFilterBuilder<TModel>;
+    }
+    
     return query;
   }
 
@@ -151,6 +177,11 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     _dynamicFilterApplicator = null; // Reset dynamic filters
     _totalRemoteCount = null; // Reset count tracking
     _isDisposed = false;
+    
+    // Initialize ordering from settings
+    _orderColumn = arg.defaultOrderColumn;
+    _orderAscending = arg.defaultOrderAscending;
+    _orderNullsFirst = arg.defaultOrderNullsFirst;
 
     ref.onDispose(() {
       _isDisposed = true;
@@ -201,6 +232,9 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     final String aliasInSubQuery =
         jsonSelectSubQueryStatement.fromAlias ?? 't_fallback';
 
+    // Note: The SQL query for the stream is maintaining the feed_item_references display_order,
+    // not applying the custom ordering. This is because the feed structure maintains its own order.
+    // The custom ordering affects how items are fetched from the server and inserted into the feed.
     final sql = '''
       SELECT
         fir.id AS feed_item_ref_id,
@@ -274,7 +308,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
   Future<void> refreshFeed({bool initialize = false}) async {
     try {
       _logger.info(
-        'refreshFeed called. initialize: \$initialize, current terms: "\$terms", dynamicFiltersSet: \${_dynamicFilterApplicator != null}',
+        'refreshFeed called. initialize: \$initialize, current terms: "\$terms", dynamicFiltersSet: \${_dynamicFilterApplicator != null}, orderColumn: \$_orderColumn',
       );
 
       // _fetch will use _getEffectiveQueryBuilder() and return TetherClientReturn
@@ -405,7 +439,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
         currentPage = nextPage;
 
         _logger.info(
-          'fetchMoreItems: Added \${newItems.length} items. Current page: \$currentPage, Total remote count: \$_totalRemoteCount',
+          'fetchMoreItems: Added \${newItems.length} items. Current page: \${currentPage}, Total remote count: \${_totalRemoteCount}',
         );
       }
     } catch (e, s) {
@@ -491,6 +525,43 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
       );
     }
   }
+  
+  /// Apply a new ordering to the feed items.
+  ///
+  /// This will fetch items from the remote source in the specified order
+  /// and rebuild the feed with those items.
+  ///
+  /// [column] - The column to order by
+  /// [ascending] - Whether to order in ascending (true) or descending (false) order
+  /// [nullsFirst] - Whether NULL values should be first (true) or last (false) when ordering
+  Future<void> applyOrdering({
+    required TetherColumn column,
+    bool ascending = true,
+    bool nullsFirst = false,
+  }) async {
+    _logger.info(
+      "Applying ordering for feedKey '\${_currentSettings.feedKey}': \${column.columnName} \${ascending ? 'ASC' : 'DESC'}, nullsFirst: \${nullsFirst}",
+    );
+    _orderColumn = column;
+    _orderAscending = ascending;
+    _orderNullsFirst = nullsFirst;
+    currentPage = 0;
+    _totalRemoteCount = null; // Reset count when ordering changes
+    await refreshFeed(initialize: true);
+  }
+
+  /// Clears the custom ordering, reverting to the default ordering (if any)
+  Future<void> clearOrdering() async {
+    _logger.info(
+      "Clearing ordering for feedKey '\${_currentSettings.feedKey}'.",
+    );
+    _orderColumn = _currentSettings.defaultOrderColumn;
+    _orderAscending = _currentSettings.defaultOrderAscending;
+    _orderNullsFirst = _currentSettings.defaultOrderNullsFirst;
+    currentPage = 0;
+    _totalRemoteCount = null; // Reset count when clearing ordering
+    await refreshFeed(initialize: true);
+  }
 
   /// Getter to expose the current total count for UI components
   int? get totalRemoteCount => _totalRemoteCount;
@@ -498,6 +569,12 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
   /// Getter to expose whether more items are available for UI components
   bool get hasMoreItems => _hasMoreItems;
 }
+
+
+
+
+
+
 
 
 

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.1.2
 
 environment:
   sdk: ^3.7.2
@@ -37,9 +37,9 @@ dependencies:
   supabase_flutter: ^2.9.0
   sqlite_async: ^0.11.4
   sqlite3_flutter_libs: ^0.5.32
-  # tether_libs: ^1.0.5
-  tether_libs: 
-    path: ../../packages/tether_libs
+  tether_libs: ^1.1.2
+  # tether_libs: 
+  #   path: ../../packages/tether_libs
   supabase: ^2.7.0
   flutter_riverpod: ^3.0.0-dev.14
   equatable: ^2.0.7

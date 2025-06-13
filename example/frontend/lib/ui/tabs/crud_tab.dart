@@ -65,7 +65,7 @@ class _CrudTabState extends ConsumerState<CrudTab> {
       try {
         if (_editingGenreId == null) {
           // Create
-          await genreManager.query.insert([genreData]);
+          await genreManager.query.insert([genreData.toInput()]);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Genre created successfully!')),
@@ -74,7 +74,7 @@ class _CrudTabState extends ConsumerState<CrudTab> {
         } else {
           // Update
           await genreManager.query
-              .update(value: genreData)
+              .update(value: genreData.toInput())
               .eq(GenresColumn.id, genreData.id);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(

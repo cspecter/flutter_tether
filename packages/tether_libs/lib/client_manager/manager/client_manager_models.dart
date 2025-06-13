@@ -4,6 +4,7 @@ import 'package:meta/meta.dart'; // For @immutable
 import 'package:sqlite_async/sqlite3_common.dart';
 import 'package:tether_libs/models/supabase_select_builder_base.dart';
 import 'package:tether_libs/models/table_info.dart';
+import 'package:tether_libs/models/tether_model_input.dart';
 import 'package:tether_libs/models/tether_model.dart';
 
 typedef FromJsonFactory<T extends TetherModel<T>> =
@@ -289,11 +290,12 @@ class SqlStatement {
 
 // --- Updated ClientManagerSqlUtils ---
 
+
 /// Utility class for generating SQLite SQL strings from TetherModels and applying transformations.
 class ClientManagerSqlUtils {
-  /// Generates a structured INSERT statement for a list of models.
-  static SqlStatement buildInsertSql<T>(
-    List<TetherModel<T>> models,
+/// Generates a structured INSERT statement for a list of models.
+  static SqlStatement buildInsertSqlFromModel<TModel extends TetherModel<TModel>>(
+    List<TModel> models,
     String tableName,
   ) {
     if (models.isEmpty) {
@@ -337,13 +339,59 @@ class ClientManagerSqlUtils {
     );
   }
 
+  /// Generates a structured INSERT statement for a list of models.
+  static SqlStatement buildInsertSql<TInput extends TetherModelInput<TInput, TModel>, TModel extends TetherModel<TModel>>(
+    List<TInput> models,
+    String tableName,
+  ) {
+    if (models.isEmpty) {
+      throw ArgumentError(
+        'Cannot build INSERT statement from empty model list.',
+      );
+    }
+    final firstModelMap = models.first.toSqliteMap();
+    if (firstModelMap.isEmpty) {
+      throw ArgumentError(
+        'Cannot build INSERT statement: First model has no data.',
+      );
+    }
+    final columns = firstModelMap.keys.toList();
+    final columnCount = columns.length;
+    final valuePlaceholderGroup =
+        '(${List.filled(columnCount, '?').join(', ')})';
+    final allPlaceholders = List.filled(
+      models.length,
+      valuePlaceholderGroup,
+    ).join(', ');
+    final allArguments = <Object?>[];
+
+    for (final model in models) {
+      final map = model.toSqliteMap();
+      if (map.length != columnCount ||
+          map.keys.join(',') != columns.join(',')) {
+        throw ArgumentError(
+          'Inconsistent model structure detected for bulk INSERT.',
+        );
+      }
+      allArguments.addAll(map.values);
+    }
+
+    return SqlStatement(
+      operationType: SqlOperationType.insert,
+      tableName: tableName,
+      insertColumns: columns,
+      insertValuesPlaceholders: allPlaceholders,
+      insertArguments: allArguments,
+    );
+  }
+
   /// Generates a structured UPDATE statement for a given model, based on its ID.
-  static SqlStatement buildUpdateSql<T>(
-    TetherModel<T> model,
+  static SqlStatement buildUpdateSql<TInput extends TetherModelInput<TInput, TModel>, TModel extends TetherModel<TModel>>(
+    TetherModelInput<TInput, TModel> model,
     String tableName, {
     String idColumnName = 'id',
   }) {
-    final map = model.toSqlite();
+    final map = model.toSqliteMap();
     final idValue = map.remove(idColumnName);
 
     if (idValue == null) {

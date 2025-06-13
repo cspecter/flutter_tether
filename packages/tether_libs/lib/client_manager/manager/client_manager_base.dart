@@ -13,8 +13,8 @@ class TetherClientReturn<TModel extends TetherModel<TModel>> {
   final String? error;
   final int? count;
 
-  TModel get single =>
-      data.isNotEmpty ? data.first : throw StateError('No data available');
+  TModel? get single =>
+      data.isNotEmpty ? data.first : null;
 
   TetherClientReturn({required this.data, this.error, this.count});
 

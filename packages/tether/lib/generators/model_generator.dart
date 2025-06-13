@@ -275,7 +275,7 @@ class ModelGenerator {
     buffer.writeln("import 'dart:convert';");
     buffer.writeln("import 'package:sqlite_async/sqlite3_common.dart';");
     buffer.writeln("import 'package:tether_libs/models/tether_model.dart';");
-    buffer.writeln("import 'package:collection/collection.dart'; // Added for whereNotNull");
+    buffer.writeln("import 'package:tether_libs/models/tether_model_input.dart';"); // Add this line
     buffer.writeln();
     // Potentially add imports for custom types if needed later
   }
@@ -301,6 +301,7 @@ class ModelGenerator {
       }
     }
 
+    // Generate main model class
     buffer.writeln('/// Represents the `$tableName` table.');
     buffer.writeln('class $className extends TetherModel<$className> {');
 
@@ -405,27 +406,69 @@ class ModelGenerator {
     buffer.writeln();
 
     // --- Convenience Getter for M2M Target Models ---
+    final Set<String> allFieldNamesForCollisionCheck = {};
+    for (final column in table.columns) {
+      allFieldNamesForCollisionCheck.add(column.localName.camelCase);
+    }
+    for (final fk in table.foreignKeys) {
+      final foreignTableInfo = _tableMap[fk.originalForeignTableName];
+      if (foreignTableInfo != null) {
+        allFieldNamesForCollisionCheck.add(
+          _getFieldNameFromFkColumn(fk.originalColumns.first),
+        );
+      }
+    }
+    for (final relInfo in reverseRelations) {
+      allFieldNamesForCollisionCheck.add(relInfo.fieldNameInThisModel);
+    }
+
+    final Set<String> m2mGetterNamesGeneratedSoFar = {};
+
     for (final relation in reverseRelations) {
       if (relation.relationType == 'manyToMany' &&
           relation.m2mTargetLinkGetterName != null &&
           relation.m2mTargetModelClassName != null &&
           relation.m2mJoinModelFieldNameForTarget != null) {
-        final getterName = relation.m2mTargetLinkGetterName!;
-        final targetModelClassName = relation.m2mTargetModelClassName!;
-        final listFieldNameOfJoinModels =
-            relation.fieldNameInThisModel; // e.g., bookstoreBooks
-        final fieldInJoinModel =
-            relation.m2mJoinModelFieldNameForTarget!; // e.g., book
+        String getterName = relation.m2mTargetLinkGetterName!;
+        final String targetModelClassName = relation.m2mTargetModelClassName!;
+        final String listFieldNameOfJoinModels =
+            relation.fieldNameInThisModel; // e.g., bookAuthors
+        final String fieldInJoinModel =
+            relation.m2mJoinModelFieldNameForTarget!; // e.g. author
+
+        // Check for conflict with existing fields or already generated M2M getters
+        if (allFieldNamesForCollisionCheck.contains(getterName) ||
+            m2mGetterNamesGeneratedSoFar.contains(getterName)) {
+          // Attempt to create a unique name using the junction list field name's PascalCase
+          String disambiguatedPart =
+              relation
+                  .fieldNameInThisModel
+                  .pascalCase; // E.g. BookAuthors, PostFlags
+          getterName =
+              '${relation.m2mTargetLinkGetterName}From$disambiguatedPart';
+
+          // Final check for the disambiguated name
+          if (allFieldNamesForCollisionCheck.contains(getterName) ||
+              m2mGetterNamesGeneratedSoFar.contains(getterName)) {
+            _logger.warning(
+              "Skipping M2M getter: Could not generate unique name for ${targetModelClassName}s via ${relation.relatedModelClassName} in ${table.localName.pascalCase}. Tried '$getterName'.",
+            );
+            continue; // Skip this getter
+          }
+        }
+
+        // If we reach here, getterName is considered unique.
+        m2mGetterNamesGeneratedSoFar.add(getterName);
 
         buffer.writeln(
-          '  /// Convenience getter for direct access to ${targetModelClassName}s from the many-to-many relationship.',
+          '  /// Convenience getter for direct access to ${targetModelClassName}s from the M2M relationship via `${listFieldNameOfJoinModels}`.',
         );
         buffer.writeln('  List<$targetModelClassName>? get $getterName {');
         buffer.writeln('    return $listFieldNameOfJoinModels');
         buffer.writeln(
           '        ?.map((joinModel) => joinModel.$fieldInJoinModel)',
         );
-        buffer.writeln('        .whereNotNull() // From package:collection');
+        buffer.writeln('        .nonNulls // From package:collection');
         buffer.writeln('        .toList();');
         buffer.writeln('  }');
         buffer.writeln();
@@ -633,6 +676,20 @@ class ModelGenerator {
     buffer.writeln('  }');
     buffer.writeln();
 
+    // --- toInput Method ---
+    final inputClassName = _getInputClassName(className);
+    buffer.writeln('  /// Creates an input object for operations like insert, update, upsert.');
+    buffer.writeln('  @override'); 
+    buffer.writeln('  $inputClassName toInput() {');
+    buffer.writeln('    return $inputClassName(');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      buffer.writeln('      $fieldName: $fieldName,');
+    }
+    buffer.writeln('    );');
+    buffer.writeln('  }');
+    buffer.writeln();
+
     // --- copyWith Method ---
     buffer.writeln(
       '  /// Creates a copy of this instance with potentially modified fields.',
@@ -702,8 +759,8 @@ class ModelGenerator {
       final foreignTableInfo = _tableMap[fk.originalForeignTableName];
       if (foreignTableInfo != null) {
         if (!firstFieldToString) buffer.write(', ');
-        final fieldName = _getFieldNameFromFkColumn(fk.originalColumns.first);
-        buffer.write('$fieldName: \$$fieldName');
+        final fieldNameFK = _getFieldNameFromFkColumn(fk.originalColumns.first);
+        buffer.write('$fieldNameFK: \$$fieldNameFK');
         firstFieldToString = false;
       }
     }
@@ -717,7 +774,139 @@ class ModelGenerator {
     buffer.writeln(")';");
     buffer.writeln('  }');
 
-    buffer.writeln('}');
+    buffer.writeln('}'); // End class $className
+
+    // Generate the companion ModelInput class
+    _generateModelInputClass(buffer, table, className);
+  }
+
+  /// Generates a companion Input class for a model
+  void _generateModelInputClass(StringBuffer buffer, SupabaseTableInfo table, String modelClassName) {
+    final inputClassName = _getInputClassName(modelClassName);
+    
+    buffer.writeln();
+    buffer.writeln('/// Input class for `$modelClassName` operations (insert, update, upsert).');
+    buffer.writeln('/// All fields are optional for flexibility in partial updates.');
+    buffer.writeln('class $inputClassName extends TetherModelInput<$inputClassName, $modelClassName> {');
+
+    // --- Fields for table columns only (no relationships) ---
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      // Make all types nullable by ensuring they end with '?'
+      final dartType = _mapPostgresToDartType(column.type, true); // Force nullable
+      buffer.writeln('  final $dartType $fieldName;');
+    }
+    buffer.writeln();
+
+    // --- Constructor with all optional parameters ---
+    buffer.writeln('  $inputClassName({');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      buffer.writeln('    this.$fieldName,');
+    }
+    buffer.writeln('  });');
+    buffer.writeln();
+
+    // --- Factory Constructor from model instance ---
+    buffer.writeln('  /// Creates an input object from a model instance.');
+    buffer.writeln('  factory $inputClassName.fromModel($modelClassName model) {');
+    buffer.writeln('    return $inputClassName(');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      buffer.writeln('      $fieldName: model.$fieldName,');
+    }
+    buffer.writeln('    );');
+    buffer.writeln('  }');
+    buffer.writeln();
+
+    // --- toJson Method (for Supabase) ---
+    buffer.writeln('  @override');
+    buffer.writeln('  Map<String, dynamic> toJson() {');
+    buffer.writeln('    final map = <String, dynamic>{};');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      final jsonKey = column.originalName; // DB column name (snake_case)
+      buffer.writeln('    if ($fieldName != null) {');
+      
+      // Handle type-specific conversions just like in the model's toJson
+      final pgType = column.type.toLowerCase();
+      if (pgType.startsWith('timestamp') || pgType == 'date') {
+        buffer.writeln('      map[\'$jsonKey\'] = $fieldName?.toIso8601String();');
+      } else if (pgType == 'json' || pgType == 'jsonb') {
+        buffer.writeln('      map[\'$jsonKey\'] = $fieldName;');
+      } else if (pgType.endsWith('[]')) {
+        buffer.writeln('      map[\'$jsonKey\'] = $fieldName;');
+      } else {
+        buffer.writeln('      map[\'$jsonKey\'] = $fieldName;');
+      }
+      
+      buffer.writeln('    }');
+    }
+    buffer.writeln('    return map;');
+    buffer.writeln('  }');
+    buffer.writeln();
+
+    // --- toSqliteMap Method ---
+    buffer.writeln('  @override');
+    buffer.writeln('  Map<String, dynamic> toSqliteMap() {');
+    buffer.writeln('    final map = <String, dynamic>{};');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      final sqliteKey = column.originalName; // Use DB column name for consistency
+      buffer.writeln('    if ($fieldName != null) {');
+      
+      // Handle type-specific conversions for SQLite
+      final pgType = column.type.toLowerCase();
+      if (pgType.startsWith('timestamp') || pgType == 'date') {
+        buffer.writeln('      map[\'$sqliteKey\'] = $fieldName?.toIso8601String();');
+      } else if (pgType == 'boolean' || pgType == 'bool') {
+        buffer.writeln('      map[\'$sqliteKey\'] = $fieldName == null ? null : ($fieldName! ? 1 : 0);');
+      } else if (pgType == 'json' || pgType == 'jsonb' || pgType.endsWith('[]')) {
+        buffer.writeln('      map[\'$sqliteKey\'] = jsonEncode($fieldName);');
+      } else {
+        buffer.writeln('      map[\'$sqliteKey\'] = $fieldName;');
+      }
+      
+      buffer.writeln('    }');
+    }
+    buffer.writeln('    return map;');
+    buffer.writeln('  }');
+    buffer.writeln();
+
+    // --- copyWith Method ---
+    buffer.writeln('  @override');
+    buffer.writeln('  $inputClassName copyWith({');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      // All parameters already nullable, no need for extra '?'
+      final dartType = _mapPostgresToDartType(column.type, true);
+      buffer.writeln('    $dartType $fieldName,');
+    }
+    buffer.writeln('  }) {');
+    buffer.writeln('    return $inputClassName(');
+    for (final column in table.columns) {
+      final fieldName = column.localName.camelCase;
+      buffer.writeln('      $fieldName: $fieldName ?? this.$fieldName,');
+    }
+    buffer.writeln('    );');
+    buffer.writeln('  }');
+    buffer.writeln();
+    
+    // --- toString Method ---
+    buffer.writeln('  @override');
+    buffer.writeln('  String toString() {');
+    buffer.write("    return '$inputClassName(");
+    bool firstField = true;
+    for (final column in table.columns) {
+      if (!firstField) buffer.write(', ');
+      final fieldName = column.localName.camelCase;
+      buffer.write('$fieldName: \$$fieldName');
+      firstField = false;
+    }
+    buffer.writeln(")';");
+    buffer.writeln('  }');
+
+    buffer.writeln('}'); // End class ModelInput
   }
 
   /// Generates the Dart code snippet for converting a JSON/DB value to the field type.
@@ -913,9 +1102,21 @@ class ModelGenerator {
     // Use the safe local name (already handles Dart keywords/built-ins)
     // Apply prefix and suffix from config
     final prefix = config.modelPrefix ?? '';
-    final suffix = config.modelSuffix ?? ''; // Default suffix if not provided
+    final suffix =
+        config.modelSuffix ?? 'Model'; // Default suffix if not provided
     // Ensure PascalCase for the base name before adding prefix/suffix
     return '$prefix${singularize(table.localName.pascalCase)}$suffix';
+  }
+
+  /// Gets the Dart input class name for a model based on config prefix/suffix.
+  String _getInputClassName(String modelClassName) {
+    // Check if model class name ends with 'Model' suffix
+    if (modelClassName.endsWith('Model')) {
+      // Remove 'Model' suffix and add 'Input' instead
+      return '${modelClassName.substring(0, modelClassName.length - 5)}Input';
+    }
+    // If no 'Model' suffix, just append 'Input'
+    return '${modelClassName}Input';
   }
 
   /// Simple pluralization (add 's' unless ends in 's'). Basic, improve if needed.
@@ -931,3 +1132,4 @@ class ModelGenerator {
     return '${word}s';
   }
 } // End ModelGenerator class
+

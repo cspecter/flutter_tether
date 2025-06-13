@@ -398,7 +398,8 @@ class AuthManager<TProfileModel extends TetherModel<TProfileModel>> {
 
       // Use ClientManagerSqlUtils.buildInsertSql for consistency,
       // even though it's a single record. It expects a list.
-      final insertStatement = ClientManagerSqlUtils.buildInsertSql(
+
+      final insertStatement = ClientManagerSqlUtils.buildInsertSqlFromModel(
         [profileModel],
         _localProfileTableName, // Use the designated local table name
       );

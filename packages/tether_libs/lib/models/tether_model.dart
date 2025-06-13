@@ -1,4 +1,5 @@
 import 'package:sqlite_async/sqlite3_common.dart';
+import 'package:tether_libs/models/tether_model_input.dart';
 
 /// An abstract base class for all data models managed by the Tether system.
 ///
@@ -79,6 +80,9 @@ import 'package:sqlite_async/sqlite3_common.dart';
 ///   String toString() => 'MyData(id: $id, name: $name, createdAt: $createdAt)';
 /// }
 /// ```
+/// 
+/// [T] is the concrete model type (e.g., BookModel)
+/// [I] is the corresponding input type (e.g., BookInput)
 abstract class TetherModel<T> {
   /// The underlying data map holding the model's properties.
   /// Subclasses should initialize this in their constructors.
@@ -108,6 +112,26 @@ abstract class TetherModel<T> {
   /// - Enums to `String` or `int`.
   /// - Custom objects to a storable format (e.g., JSON string).
   Map<String, dynamic> toSqlite();
+
+  /// Creates a corresponding input object for this model.
+  ///
+  /// The returned input object can be used for insert, update, and upsert operations
+  /// with all fields pre-filled with the values from this model.
+  ///
+  /// Subclasses must implement this method to return their specific input type.
+  /// 
+  /// Example:
+  /// ```dart
+  /// @override
+  /// BookInput toInput() {
+  ///   return BookInput(
+  ///     id: id,
+  ///     title: title,
+  ///     // other fields...
+  ///   );
+  /// }
+  /// ```
+  TetherModelInput toInput();
 
   /// Creates a new instance of the model [T] with updated properties.
   ///
@@ -197,6 +221,12 @@ class _GenericTetherModel extends TetherModel<dynamic> {
   Map<String, dynamic> toSqlite() {
     return Map<String, dynamic>.from(data);
   }
+  
+  /// Creates a generic input from this model's data.
+  @override
+  TetherModelInput toInput() {
+    return _GenericTetherModelInput(data);
+  }
 
   /// Creates a new `_GenericTetherModel` by merging the current `data` with `newData`.
   ///
@@ -209,5 +239,32 @@ class _GenericTetherModel extends TetherModel<dynamic> {
   @override
   String toString() {
     return '_GenericTetherModel($data)';
+  }
+}
+
+/// Generic implementation of TetherModelInput for the GenericTetherModel
+class _GenericTetherModelInput implements TetherModelInput<_GenericTetherModelInput, _GenericTetherModel> {
+  final Map<String, dynamic> data;
+  
+  _GenericTetherModelInput(this.data);
+  
+  @override
+  _GenericTetherModelInput copyWith() {
+    return _GenericTetherModelInput(Map<String, dynamic>.from(data));
+  }
+  
+  @override
+  Map<String, dynamic> toJson() {
+    return Map<String, dynamic>.from(data);
+  }
+  
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    return Map<String, dynamic>.from(data);
+  }
+  
+  @override
+  String toString() {
+    return '_GenericTetherModelInput($data)';
   }
 }

@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:tether_libs/models/supabase_select_builder_base.dart';
+import 'package:tether_libs/models/tether_model_input.dart';
 import 'package:tether_libs/models/tether_model.dart';
 import 'client_manager_models.dart';
 import 'client_manager_base.dart';
@@ -61,8 +62,8 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     );
   }
 
-  ClientManagerFilterBuilder<TModel> insert(
-    List<TetherModel<TModel>> values, {
+  ClientManagerFilterBuilder<TModel> insert<TInput extends TetherModelInput<TInput, TModel>>(
+    List<TInput> values, {
     bool defaultToNull = true,
   }) {
     return _copyWithQuery(
@@ -76,8 +77,8 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     );
   }
 
-  ClientManagerFilterBuilder<TModel> upsert(
-    TetherModel<TModel> value, {
+  ClientManagerFilterBuilder<TModel> upsert<TInput extends TetherModelInput<TInput, TModel>>(
+    TInput value, {
     String? onConflict,
     bool ignoreDuplicates = false,
     bool defaultToNull = true,
@@ -96,8 +97,8 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     );
   }
 
-  ClientManagerFilterBuilder<TModel> update({
-    required TetherModel<TModel> value,
+  ClientManagerFilterBuilder<TModel> update<TInput extends TetherModelInput<TInput, TModel>>({
+    required TInput value,
   }) {
     // supabase.update returns PostgrestFilterBuilder<dynamic>, which now matches _copyWithQuery
     return _copyWithQuery(
@@ -109,15 +110,19 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
   }
 
   ClientManagerFilterBuilder<TModel> delete(
-    TetherModel<TModel> value, {
+    dynamic id, {
     String idColumnName = 'id',
   }) {
+    if (id is! String && id is! int) {
+    throw ArgumentError('ID must be either a String or an int');
+  }
+
     return _copyWithQuery(
-      supabase: supabase.delete().eq('id', value.toJson()[idColumnName]),
+      supabase: supabase.delete().eq('id', id),
       type: SqlOperationType.delete,
       localQuery: ClientManagerSqlUtils.buildDeleteSql(
         tableName,
-        value.toJson()['id'],
+        id,
         idColumnName: idColumnName,
       ),
     );

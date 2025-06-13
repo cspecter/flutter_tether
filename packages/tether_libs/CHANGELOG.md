@@ -14,3 +14,9 @@
 
 - Changed the Client Manager to use the new `TetherClientReturn` class for all
   results.
+
+## 1.1.2
+- Add `TetherModelInput` class to handle input and update operations
+
+## 1.1.3
+- Fixed the `delete` method on the `ClientManager` to accept either String or int

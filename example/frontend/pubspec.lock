@@ -265,7 +265,7 @@ packages:
       path: "../../packages/tether"
       relative: true
     source: path
-    version: "1.0.8"
+    version: "1.1.2"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
@@ -871,10 +871,11 @@ packages:
   tether_libs:
     dependency: "direct main"
     description:
-      path: "../../packages/tether_libs"
-      relative: true
-    source: path
-    version: "1.0.6"
+      name: tether_libs
+      sha256: acb4494ccece136cd271e42e70c617f19e8e0c438ffb3b74a856524c5267b823
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.1.2"
   typed_data:
     dependency: transitive
     description:

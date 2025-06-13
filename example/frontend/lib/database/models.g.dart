@@ -4,7 +4,7 @@
 import 'dart:convert';
 import 'package:sqlite_async/sqlite3_common.dart';
 import 'package:tether_libs/models/tether_model.dart';
-import 'package:collection/collection.dart'; // Added for whereNotNull
+import 'package:tether_libs/models/tether_model_input.dart';
 
 /// Represents the `bookstores` table.
 class BookstoreModel extends TetherModel<BookstoreModel> {
@@ -41,11 +41,11 @@ class BookstoreModel extends TetherModel<BookstoreModel> {
   @override
   String get localId => id;
 
-  /// Convenience getter for direct access to BookModels from the many-to-many relationship.
+  /// Convenience getter for direct access to BookModels from the M2M relationship via `bookstoreBooks`.
   List<BookModel>? get books {
     return bookstoreBooks
         ?.map((joinModel) => joinModel.book)
-        .whereNotNull() // From package:collection
+        .nonNulls // From package:collection
         .toList();
   }
 
@@ -116,6 +116,20 @@ class BookstoreModel extends TetherModel<BookstoreModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  BookstoreInput toInput() {
+    return BookstoreInput(
+      address: address,
+      createdAt: createdAt,
+      establishedDate: establishedDate,
+      id: id,
+      isOpen: isOpen,
+      name: name,
+      updatedAt: updatedAt,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   BookstoreModel copyWith({
@@ -143,6 +157,121 @@ class BookstoreModel extends TetherModel<BookstoreModel> {
   @override
   String toString() {
     return 'BookstoreModel(address: $address, createdAt: $createdAt, establishedDate: $establishedDate, id: $id, isOpen: $isOpen, name: $name, updatedAt: $updatedAt, bookstoreBooks: $bookstoreBooks)';
+  }
+}
+
+/// Input class for `BookstoreModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class BookstoreInput extends TetherModelInput<BookstoreInput, BookstoreModel> {
+  final Map<String, dynamic>? address;
+  final DateTime? createdAt;
+  final DateTime? establishedDate;
+  final String? id;
+  final bool? isOpen;
+  final String? name;
+  final DateTime? updatedAt;
+
+  BookstoreInput({
+    this.address,
+    this.createdAt,
+    this.establishedDate,
+    this.id,
+    this.isOpen,
+    this.name,
+    this.updatedAt,
+  });
+
+  /// Creates an input object from a model instance.
+  factory BookstoreInput.fromModel(BookstoreModel model) {
+    return BookstoreInput(
+      address: model.address,
+      createdAt: model.createdAt,
+      establishedDate: model.establishedDate,
+      id: model.id,
+      isOpen: model.isOpen,
+      name: model.name,
+      updatedAt: model.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (address != null) {
+      map['address'] = address;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (establishedDate != null) {
+      map['established_date'] = establishedDate?.toIso8601String();
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (isOpen != null) {
+      map['is_open'] = isOpen;
+    }
+    if (name != null) {
+      map['name'] = name;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (address != null) {
+      map['address'] = jsonEncode(address);
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (establishedDate != null) {
+      map['established_date'] = establishedDate?.toIso8601String();
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (isOpen != null) {
+      map['is_open'] = isOpen == null ? null : (isOpen! ? 1 : 0);
+    }
+    if (name != null) {
+      map['name'] = name;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  BookstoreInput copyWith({
+    Map<String, dynamic>? address,
+    DateTime? createdAt,
+    DateTime? establishedDate,
+    String? id,
+    bool? isOpen,
+    String? name,
+    DateTime? updatedAt,
+  }) {
+    return BookstoreInput(
+      address: address ?? this.address,
+      createdAt: createdAt ?? this.createdAt,
+      establishedDate: establishedDate ?? this.establishedDate,
+      id: id ?? this.id,
+      isOpen: isOpen ?? this.isOpen,
+      name: name ?? this.name,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'BookstoreInput(address: $address, createdAt: $createdAt, establishedDate: $establishedDate, id: $id, isOpen: $isOpen, name: $name, updatedAt: $updatedAt)';
   }
 }
 
@@ -262,6 +391,22 @@ class AuthorModel extends TetherModel<AuthorModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  AuthorInput toInput() {
+    return AuthorInput(
+      bio: bio,
+      birthDate: birthDate,
+      createdAt: createdAt,
+      deathDate: deathDate,
+      document: document,
+      firstName: firstName,
+      id: id,
+      lastName: lastName,
+      updatedAt: updatedAt,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   AuthorModel copyWith({
@@ -296,6 +441,143 @@ class AuthorModel extends TetherModel<AuthorModel> {
   }
 }
 
+/// Input class for `AuthorModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class AuthorInput extends TetherModelInput<AuthorInput, AuthorModel> {
+  final String? bio;
+  final DateTime? birthDate;
+  final DateTime? createdAt;
+  final DateTime? deathDate;
+  final String? document;
+  final String? firstName;
+  final String? id;
+  final String? lastName;
+  final DateTime? updatedAt;
+
+  AuthorInput({
+    this.bio,
+    this.birthDate,
+    this.createdAt,
+    this.deathDate,
+    this.document,
+    this.firstName,
+    this.id,
+    this.lastName,
+    this.updatedAt,
+  });
+
+  /// Creates an input object from a model instance.
+  factory AuthorInput.fromModel(AuthorModel model) {
+    return AuthorInput(
+      bio: model.bio,
+      birthDate: model.birthDate,
+      createdAt: model.createdAt,
+      deathDate: model.deathDate,
+      document: model.document,
+      firstName: model.firstName,
+      id: model.id,
+      lastName: model.lastName,
+      updatedAt: model.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (bio != null) {
+      map['bio'] = bio;
+    }
+    if (birthDate != null) {
+      map['birth_date'] = birthDate?.toIso8601String();
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (deathDate != null) {
+      map['death_date'] = deathDate?.toIso8601String();
+    }
+    if (document != null) {
+      map['document'] = document;
+    }
+    if (firstName != null) {
+      map['first_name'] = firstName;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (lastName != null) {
+      map['last_name'] = lastName;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (bio != null) {
+      map['bio'] = bio;
+    }
+    if (birthDate != null) {
+      map['birth_date'] = birthDate?.toIso8601String();
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (deathDate != null) {
+      map['death_date'] = deathDate?.toIso8601String();
+    }
+    if (document != null) {
+      map['document'] = document;
+    }
+    if (firstName != null) {
+      map['first_name'] = firstName;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (lastName != null) {
+      map['last_name'] = lastName;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  AuthorInput copyWith({
+    String? bio,
+    DateTime? birthDate,
+    DateTime? createdAt,
+    DateTime? deathDate,
+    String? document,
+    String? firstName,
+    String? id,
+    String? lastName,
+    DateTime? updatedAt,
+  }) {
+    return AuthorInput(
+      bio: bio ?? this.bio,
+      birthDate: birthDate ?? this.birthDate,
+      createdAt: createdAt ?? this.createdAt,
+      deathDate: deathDate ?? this.deathDate,
+      document: document ?? this.document,
+      firstName: firstName ?? this.firstName,
+      id: id ?? this.id,
+      lastName: lastName ?? this.lastName,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'AuthorInput(bio: $bio, birthDate: $birthDate, createdAt: $createdAt, deathDate: $deathDate, document: $document, firstName: $firstName, id: $id, lastName: $lastName, updatedAt: $updatedAt)';
+  }
+}
+
 /// Represents the `genres` table.
 class GenreModel extends TetherModel<GenreModel> {
   final DateTime? createdAt;
@@ -325,11 +607,11 @@ class GenreModel extends TetherModel<GenreModel> {
   @override
   String get localId => id;
 
-  /// Convenience getter for direct access to BookModels from the many-to-many relationship.
+  /// Convenience getter for direct access to BookModels from the M2M relationship via `bookGenres`.
   List<BookModel>? get books {
     return bookGenres
         ?.map((joinModel) => joinModel.book)
-        .whereNotNull() // From package:collection
+        .nonNulls // From package:collection
         .toList();
   }
 
@@ -392,6 +674,18 @@ class GenreModel extends TetherModel<GenreModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  GenreInput toInput() {
+    return GenreInput(
+      createdAt: createdAt,
+      description: description,
+      id: id,
+      name: name,
+      updatedAt: updatedAt,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   GenreModel copyWith({
@@ -415,6 +709,99 @@ class GenreModel extends TetherModel<GenreModel> {
   @override
   String toString() {
     return 'GenreModel(createdAt: $createdAt, description: $description, id: $id, name: $name, updatedAt: $updatedAt, bookGenres: $bookGenres)';
+  }
+}
+
+/// Input class for `GenreModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class GenreInput extends TetherModelInput<GenreInput, GenreModel> {
+  final DateTime? createdAt;
+  final String? description;
+  final String? id;
+  final String? name;
+  final DateTime? updatedAt;
+
+  GenreInput({
+    this.createdAt,
+    this.description,
+    this.id,
+    this.name,
+    this.updatedAt,
+  });
+
+  /// Creates an input object from a model instance.
+  factory GenreInput.fromModel(GenreModel model) {
+    return GenreInput(
+      createdAt: model.createdAt,
+      description: model.description,
+      id: model.id,
+      name: model.name,
+      updatedAt: model.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (description != null) {
+      map['description'] = description;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (name != null) {
+      map['name'] = name;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (description != null) {
+      map['description'] = description;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (name != null) {
+      map['name'] = name;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  GenreInput copyWith({
+    DateTime? createdAt,
+    String? description,
+    String? id,
+    String? name,
+    DateTime? updatedAt,
+  }) {
+    return GenreInput(
+      createdAt: createdAt ?? this.createdAt,
+      description: description ?? this.description,
+      id: id ?? this.id,
+      name: name ?? this.name,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'GenreInput(createdAt: $createdAt, description: $description, id: $id, name: $name, updatedAt: $updatedAt)';
   }
 }
 
@@ -506,6 +893,18 @@ class ImageModel extends TetherModel<ImageModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  ImageInput toInput() {
+    return ImageInput(
+      altText: altText,
+      createdAt: createdAt,
+      id: id,
+      updatedAt: updatedAt,
+      url: url,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   ImageModel copyWith({
@@ -529,6 +928,99 @@ class ImageModel extends TetherModel<ImageModel> {
   @override
   String toString() {
     return 'ImageModel(altText: $altText, createdAt: $createdAt, id: $id, updatedAt: $updatedAt, url: $url, books: $books)';
+  }
+}
+
+/// Input class for `ImageModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class ImageInput extends TetherModelInput<ImageInput, ImageModel> {
+  final String? altText;
+  final DateTime? createdAt;
+  final String? id;
+  final DateTime? updatedAt;
+  final String? url;
+
+  ImageInput({
+    this.altText,
+    this.createdAt,
+    this.id,
+    this.updatedAt,
+    this.url,
+  });
+
+  /// Creates an input object from a model instance.
+  factory ImageInput.fromModel(ImageModel model) {
+    return ImageInput(
+      altText: model.altText,
+      createdAt: model.createdAt,
+      id: model.id,
+      updatedAt: model.updatedAt,
+      url: model.url,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (altText != null) {
+      map['alt_text'] = altText;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    if (url != null) {
+      map['url'] = url;
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (altText != null) {
+      map['alt_text'] = altText;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    if (url != null) {
+      map['url'] = url;
+    }
+    return map;
+  }
+
+  @override
+  ImageInput copyWith({
+    String? altText,
+    DateTime? createdAt,
+    String? id,
+    DateTime? updatedAt,
+    String? url,
+  }) {
+    return ImageInput(
+      altText: altText ?? this.altText,
+      createdAt: createdAt ?? this.createdAt,
+      id: id ?? this.id,
+      updatedAt: updatedAt ?? this.updatedAt,
+      url: url ?? this.url,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'ImageInput(altText: $altText, createdAt: $createdAt, id: $id, updatedAt: $updatedAt, url: $url)';
   }
 }
 
@@ -600,19 +1092,19 @@ class BookModel extends TetherModel<BookModel> {
   @override
   String get localId => id;
 
-  /// Convenience getter for direct access to GenreModels from the many-to-many relationship.
+  /// Convenience getter for direct access to GenreModels from the M2M relationship via `bookGenres`.
   List<GenreModel>? get genres {
     return bookGenres
         ?.map((joinModel) => joinModel.genre)
-        .whereNotNull() // From package:collection
+        .nonNulls // From package:collection
         .toList();
   }
 
-  /// Convenience getter for direct access to BookstoreModels from the many-to-many relationship.
+  /// Convenience getter for direct access to BookstoreModels from the M2M relationship via `bookstoreBooks`.
   List<BookstoreModel>? get bookstores {
     return bookstoreBooks
         ?.map((joinModel) => joinModel.bookstore)
-        .whereNotNull() // From package:collection
+        .nonNulls // From package:collection
         .toList();
   }
 
@@ -719,6 +1211,27 @@ class BookModel extends TetherModel<BookModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  BookInput toInput() {
+    return BookInput(
+      authorId: authorId,
+      bannerImageId: bannerImageId,
+      coverImageId: coverImageId,
+      createdAt: createdAt,
+      description: description,
+      document: document,
+      id: id,
+      metadata: metadata,
+      price: price,
+      publicationDate: publicationDate,
+      stockCount: stockCount,
+      tags: tags,
+      title: title,
+      updatedAt: updatedAt,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   BookModel copyWith({
@@ -768,6 +1281,198 @@ class BookModel extends TetherModel<BookModel> {
   @override
   String toString() {
     return 'BookModel(authorId: $authorId, bannerImageId: $bannerImageId, coverImageId: $coverImageId, createdAt: $createdAt, description: $description, document: $document, id: $id, metadata: $metadata, price: $price, publicationDate: $publicationDate, stockCount: $stockCount, tags: $tags, title: $title, updatedAt: $updatedAt, author: $author, bannerImage: $bannerImage, coverImage: $coverImage, bookGenres: $bookGenres, bookstoreBooks: $bookstoreBooks)';
+  }
+}
+
+/// Input class for `BookModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class BookInput extends TetherModelInput<BookInput, BookModel> {
+  final String? authorId;
+  final String? bannerImageId;
+  final String? coverImageId;
+  final DateTime? createdAt;
+  final String? description;
+  final String? document;
+  final String? id;
+  final Map<String, dynamic>? metadata;
+  final double? price;
+  final DateTime? publicationDate;
+  final int? stockCount;
+  final List<String>? tags;
+  final String? title;
+  final DateTime? updatedAt;
+
+  BookInput({
+    this.authorId,
+    this.bannerImageId,
+    this.coverImageId,
+    this.createdAt,
+    this.description,
+    this.document,
+    this.id,
+    this.metadata,
+    this.price,
+    this.publicationDate,
+    this.stockCount,
+    this.tags,
+    this.title,
+    this.updatedAt,
+  });
+
+  /// Creates an input object from a model instance.
+  factory BookInput.fromModel(BookModel model) {
+    return BookInput(
+      authorId: model.authorId,
+      bannerImageId: model.bannerImageId,
+      coverImageId: model.coverImageId,
+      createdAt: model.createdAt,
+      description: model.description,
+      document: model.document,
+      id: model.id,
+      metadata: model.metadata,
+      price: model.price,
+      publicationDate: model.publicationDate,
+      stockCount: model.stockCount,
+      tags: model.tags,
+      title: model.title,
+      updatedAt: model.updatedAt,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (authorId != null) {
+      map['author_id'] = authorId;
+    }
+    if (bannerImageId != null) {
+      map['banner_image_id'] = bannerImageId;
+    }
+    if (coverImageId != null) {
+      map['cover_image_id'] = coverImageId;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (description != null) {
+      map['description'] = description;
+    }
+    if (document != null) {
+      map['document'] = document;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (metadata != null) {
+      map['metadata'] = metadata;
+    }
+    if (price != null) {
+      map['price'] = price;
+    }
+    if (publicationDate != null) {
+      map['publication_date'] = publicationDate?.toIso8601String();
+    }
+    if (stockCount != null) {
+      map['stock_count'] = stockCount;
+    }
+    if (tags != null) {
+      map['tags'] = tags;
+    }
+    if (title != null) {
+      map['title'] = title;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (authorId != null) {
+      map['author_id'] = authorId;
+    }
+    if (bannerImageId != null) {
+      map['banner_image_id'] = bannerImageId;
+    }
+    if (coverImageId != null) {
+      map['cover_image_id'] = coverImageId;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (description != null) {
+      map['description'] = description;
+    }
+    if (document != null) {
+      map['document'] = document;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (metadata != null) {
+      map['metadata'] = jsonEncode(metadata);
+    }
+    if (price != null) {
+      map['price'] = price;
+    }
+    if (publicationDate != null) {
+      map['publication_date'] = publicationDate?.toIso8601String();
+    }
+    if (stockCount != null) {
+      map['stock_count'] = stockCount;
+    }
+    if (tags != null) {
+      map['tags'] = tags;
+    }
+    if (title != null) {
+      map['title'] = title;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    return map;
+  }
+
+  @override
+  BookInput copyWith({
+    String? authorId,
+    String? bannerImageId,
+    String? coverImageId,
+    DateTime? createdAt,
+    String? description,
+    String? document,
+    String? id,
+    Map<String, dynamic>? metadata,
+    double? price,
+    DateTime? publicationDate,
+    int? stockCount,
+    List<String>? tags,
+    String? title,
+    DateTime? updatedAt,
+  }) {
+    return BookInput(
+      authorId: authorId ?? this.authorId,
+      bannerImageId: bannerImageId ?? this.bannerImageId,
+      coverImageId: coverImageId ?? this.coverImageId,
+      createdAt: createdAt ?? this.createdAt,
+      description: description ?? this.description,
+      document: document ?? this.document,
+      id: id ?? this.id,
+      metadata: metadata ?? this.metadata,
+      price: price ?? this.price,
+      publicationDate: publicationDate ?? this.publicationDate,
+      stockCount: stockCount ?? this.stockCount,
+      tags: tags ?? this.tags,
+      title: title ?? this.title,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'BookInput(authorId: $authorId, bannerImageId: $bannerImageId, coverImageId: $coverImageId, createdAt: $createdAt, description: $description, document: $document, id: $id, metadata: $metadata, price: $price, publicationDate: $publicationDate, stockCount: $stockCount, tags: $tags, title: $title, updatedAt: $updatedAt)';
   }
 }
 
@@ -850,6 +1555,16 @@ class BookGenreModel extends TetherModel<BookGenreModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  BookGenreInput toInput() {
+    return BookGenreInput(
+      bookId: bookId,
+      genreId: genreId,
+      id: id,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   BookGenreModel copyWith({
@@ -871,6 +1586,77 @@ class BookGenreModel extends TetherModel<BookGenreModel> {
   @override
   String toString() {
     return 'BookGenreModel(bookId: $bookId, genreId: $genreId, id: $id, book: $book, genre: $genre)';
+  }
+}
+
+/// Input class for `BookGenreModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class BookGenreInput extends TetherModelInput<BookGenreInput, BookGenreModel> {
+  final String? bookId;
+  final String? genreId;
+  final int? id;
+
+  BookGenreInput({
+    this.bookId,
+    this.genreId,
+    this.id,
+  });
+
+  /// Creates an input object from a model instance.
+  factory BookGenreInput.fromModel(BookGenreModel model) {
+    return BookGenreInput(
+      bookId: model.bookId,
+      genreId: model.genreId,
+      id: model.id,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (bookId != null) {
+      map['book_id'] = bookId;
+    }
+    if (genreId != null) {
+      map['genre_id'] = genreId;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (bookId != null) {
+      map['book_id'] = bookId;
+    }
+    if (genreId != null) {
+      map['genre_id'] = genreId;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    return map;
+  }
+
+  @override
+  BookGenreInput copyWith({
+    String? bookId,
+    String? genreId,
+    int? id,
+  }) {
+    return BookGenreInput(
+      bookId: bookId ?? this.bookId,
+      genreId: genreId ?? this.genreId,
+      id: id ?? this.id,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'BookGenreInput(bookId: $bookId, genreId: $genreId, id: $id)';
   }
 }
 
@@ -953,6 +1739,16 @@ class BookstoreBookModel extends TetherModel<BookstoreBookModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  BookstoreBookInput toInput() {
+    return BookstoreBookInput(
+      bookId: bookId,
+      bookstoreId: bookstoreId,
+      id: id,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   BookstoreBookModel copyWith({
@@ -974,6 +1770,77 @@ class BookstoreBookModel extends TetherModel<BookstoreBookModel> {
   @override
   String toString() {
     return 'BookstoreBookModel(bookId: $bookId, bookstoreId: $bookstoreId, id: $id, book: $book, bookstore: $bookstore)';
+  }
+}
+
+/// Input class for `BookstoreBookModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class BookstoreBookInput extends TetherModelInput<BookstoreBookInput, BookstoreBookModel> {
+  final String? bookId;
+  final String? bookstoreId;
+  final int? id;
+
+  BookstoreBookInput({
+    this.bookId,
+    this.bookstoreId,
+    this.id,
+  });
+
+  /// Creates an input object from a model instance.
+  factory BookstoreBookInput.fromModel(BookstoreBookModel model) {
+    return BookstoreBookInput(
+      bookId: model.bookId,
+      bookstoreId: model.bookstoreId,
+      id: model.id,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (bookId != null) {
+      map['book_id'] = bookId;
+    }
+    if (bookstoreId != null) {
+      map['bookstore_id'] = bookstoreId;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (bookId != null) {
+      map['book_id'] = bookId;
+    }
+    if (bookstoreId != null) {
+      map['bookstore_id'] = bookstoreId;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    return map;
+  }
+
+  @override
+  BookstoreBookInput copyWith({
+    String? bookId,
+    String? bookstoreId,
+    int? id,
+  }) {
+    return BookstoreBookInput(
+      bookId: bookId ?? this.bookId,
+      bookstoreId: bookstoreId ?? this.bookstoreId,
+      id: id ?? this.id,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'BookstoreBookInput(bookId: $bookId, bookstoreId: $bookstoreId, id: $id)';
   }
 }
 
@@ -1075,6 +1942,20 @@ class ProfileModel extends TetherModel<ProfileModel> {
     };
   }
 
+  /// Creates an input object for operations like insert, update, upsert.
+  @override
+  ProfileInput toInput() {
+    return ProfileInput(
+      avatarUrl: avatarUrl,
+      createdAt: createdAt,
+      fullName: fullName,
+      id: id,
+      updatedAt: updatedAt,
+      username: username,
+      website: website,
+    );
+  }
+
   /// Creates a copy of this instance with potentially modified fields.
   @override
   ProfileModel copyWith({
@@ -1100,6 +1981,121 @@ class ProfileModel extends TetherModel<ProfileModel> {
   @override
   String toString() {
     return 'ProfileModel(avatarUrl: $avatarUrl, createdAt: $createdAt, fullName: $fullName, id: $id, updatedAt: $updatedAt, username: $username, website: $website)';
+  }
+}
+
+/// Input class for `ProfileModel` operations (insert, update, upsert).
+/// All fields are optional for flexibility in partial updates.
+class ProfileInput extends TetherModelInput<ProfileInput, ProfileModel> {
+  final String? avatarUrl;
+  final DateTime? createdAt;
+  final String? fullName;
+  final String? id;
+  final DateTime? updatedAt;
+  final String? username;
+  final String? website;
+
+  ProfileInput({
+    this.avatarUrl,
+    this.createdAt,
+    this.fullName,
+    this.id,
+    this.updatedAt,
+    this.username,
+    this.website,
+  });
+
+  /// Creates an input object from a model instance.
+  factory ProfileInput.fromModel(ProfileModel model) {
+    return ProfileInput(
+      avatarUrl: model.avatarUrl,
+      createdAt: model.createdAt,
+      fullName: model.fullName,
+      id: model.id,
+      updatedAt: model.updatedAt,
+      username: model.username,
+      website: model.website,
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    final map = <String, dynamic>{};
+    if (avatarUrl != null) {
+      map['avatar_url'] = avatarUrl;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (fullName != null) {
+      map['full_name'] = fullName;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    if (username != null) {
+      map['username'] = username;
+    }
+    if (website != null) {
+      map['website'] = website;
+    }
+    return map;
+  }
+
+  @override
+  Map<String, dynamic> toSqliteMap() {
+    final map = <String, dynamic>{};
+    if (avatarUrl != null) {
+      map['avatar_url'] = avatarUrl;
+    }
+    if (createdAt != null) {
+      map['created_at'] = createdAt?.toIso8601String();
+    }
+    if (fullName != null) {
+      map['full_name'] = fullName;
+    }
+    if (id != null) {
+      map['id'] = id;
+    }
+    if (updatedAt != null) {
+      map['updated_at'] = updatedAt?.toIso8601String();
+    }
+    if (username != null) {
+      map['username'] = username;
+    }
+    if (website != null) {
+      map['website'] = website;
+    }
+    return map;
+  }
+
+  @override
+  ProfileInput copyWith({
+    String? avatarUrl,
+    DateTime? createdAt,
+    String? fullName,
+    String? id,
+    DateTime? updatedAt,
+    String? username,
+    String? website,
+  }) {
+    return ProfileInput(
+      avatarUrl: avatarUrl ?? this.avatarUrl,
+      createdAt: createdAt ?? this.createdAt,
+      fullName: fullName ?? this.fullName,
+      id: id ?? this.id,
+      updatedAt: updatedAt ?? this.updatedAt,
+      username: username ?? this.username,
+      website: website ?? this.website,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'ProfileInput(avatarUrl: $avatarUrl, createdAt: $createdAt, fullName: $fullName, id: $id, updatedAt: $updatedAt, username: $username, website: $website)';
   }
 }
 
