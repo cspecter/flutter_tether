@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:path/path.dart' as p;
 import 'package:tether_libs/utils/logger.dart'; // Assuming you have a Logger utility
 
@@ -19,7 +20,7 @@ class FeedProviderGenerator {
     buffer.writeln('');
     buffer.writeln("""
 // GENERATED CODE - DO NOT MODIFY BY HAND
-// ignore_for_file: constant_identifier_names
+// ignore_for_file: constant_identifier_names, avoid_public_notifier_properties
 
 import 'dart:convert';
 
@@ -346,7 +347,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
                       itemSourceTable:
                           effectiveQuery
                               .tableName, // Use effective query's table
-                      itemSourceId: e.value.localId,
+                      itemSourceId: e.value.localId.toString(),
                       displayOrder: e.key,
                     ),
                   )
@@ -367,7 +368,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
                       itemSourceTable:
                           effectiveQuery
                               .tableName, // Use effective query's table
-                      itemSourceId: e.value.localId,
+                      itemSourceId: e.value.localId.toString(),
                       displayOrder: e.key,
                     ),
                   )
@@ -428,7 +429,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
                       itemSourceTable:
                           effectiveQuery
                               .tableName, // Use effective query's table
-                      itemSourceId: item.localId,
+                      itemSourceId: item.localId.toString(),
                       // displayOrder for addItemsToEnd is handled by the manager
                       displayOrder: -1, // Or let manager handle it
                     ),
