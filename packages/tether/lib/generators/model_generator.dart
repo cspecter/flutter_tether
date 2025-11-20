@@ -269,13 +269,16 @@ class ModelGenerator {
   void _writeHeader(StringBuffer buffer) {
     buffer.writeln('// GENERATED CODE - DO NOT MODIFY BY HAND');
     buffer.writeln(
-      '// ignore_for_file: non_constant_identifier_names, duplicate_ignore',
+      '// ignore_for_file: unused_import, prefer_relative_imports, prefer_const_constructors',
     );
     buffer.writeln();
     buffer.writeln("import 'dart:convert';");
+    buffer.writeln("import 'package:equatable/equatable.dart';");
     buffer.writeln("import 'package:sqlite_async/sqlite3_common.dart';");
     buffer.writeln("import 'package:tether_libs/models/tether_model.dart';");
     buffer.writeln("import 'package:tether_libs/models/tether_model_input.dart';"); // Add this line
+    buffer.writeln("import 'package:tether_libs/models/geojson.dart';");
+    buffer.writeln("import 'package:tether_libs/models/row_utils.dart';");
     buffer.writeln();
     // Potentially add imports for custom types if needed later
   }
@@ -289,21 +292,14 @@ class ModelGenerator {
     String idDartType = 'dynamic';
 
     if (pkColumns.length == 1) {
-      primaryKeyColumn = table.columns.firstWhereOrNull(
-        (col) => col.originalName == pkColumns[0].originalName,
-      );
-      if (primaryKeyColumn != null) {
-        idFieldName = primaryKeyColumn.localName.camelCase;
-        idDartType = _mapPostgresToDartType(
-          primaryKeyColumn.type,
-          primaryKeyColumn.isNullable,
-        );
-      }
+      primaryKeyColumn = pkColumns.first;
+      idFieldName = primaryKeyColumn.localName.camelCase;
+      idDartType = _mapPostgresToDartType(primaryKeyColumn.type, false);
     }
 
     // Generate main model class
     buffer.writeln('/// Represents the `$tableName` table.');
-    buffer.writeln('class $className extends TetherModel<$className> {');
+    buffer.writeln('class $className extends TetherModel<$className> with EquatableMixin {');
 
     // --- Fields for table columns ---
     for (final column in table.columns) {
@@ -318,7 +314,7 @@ class ModelGenerator {
       if (foreignTableInfo != null) {
         final relatedModelClassName = _getDartClassName(foreignTableInfo);
         final fieldName = _getFieldNameFromFkColumn(fk.originalColumns.first);
-        buffer.writeln('  final $relatedModelClassName? $fieldName;');
+        buffer.writeln('  $relatedModelClassName? $fieldName;');
       }
     }
 
@@ -327,27 +323,46 @@ class ModelGenerator {
     for (final relation in reverseRelations) {
       final listFieldName = relation.fieldNameInThisModel;
       final itemModelClassName = relation.relatedModelClassName;
-      buffer.writeln('  final List<$itemModelClassName>? $listFieldName;');
+      buffer.writeln('  List<$itemModelClassName>? $listFieldName;');
     }
     buffer.writeln();
 
     // --- Constructor ---
+    final Map<String, String> initializerListFields = {};
     buffer.writeln('  $className({');
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
-      bool makeRequired = true; // Default to required
+      bool makeRequired = true;
+      String? defaultValueDart;
+
+      // Check for default value on non-nullable columns
+      if (!column.isNullable && column.defaultValue != null) {
+        defaultValueDart = _convertDefaultValueToDart(column);
+        // If we have a valid Dart default, the field is not required in the constructor
+        if (defaultValueDart != null) {
+          makeRequired = false;
+          initializerListFields[fieldName] = defaultValueDart;
+        }
+      }
 
       // If the column is nullable, it's never required in the constructor.
       if (column.isNullable) {
         makeRequired = false;
-      } else {
-        // If the column is not nullable, it's always required.
-        // The assumption is that even non-nullable primary keys will be provided by the app.
-        makeRequired = true;
       }
 
-      final String constructorModifier = makeRequired ? 'required ' : '';
-      buffer.writeln('    ${constructorModifier}this.$fieldName,');
+      if (makeRequired) {
+        buffer.writeln('    required this.$fieldName,');
+      } else {
+        // The parameter should still be `this.fieldName`.
+        // The initializer list will handle the default value.
+        if (defaultValueDart != null && !defaultValueDart.contains('DateTime')) {
+          buffer.writeln('    this.$fieldName = $defaultValueDart,');
+        } else if (defaultValueDart != null && defaultValueDart.contains('DateTime')) {
+          buffer.writeln('    DateTime? $fieldName,');
+        } else {
+          buffer.writeln('    this.$fieldName,');
+        }
+      }
     }
     // Forward relation fields (these are always nullable objects, so not 'required')
     for (final fk in table.foreignKeys) {
@@ -362,41 +377,43 @@ class ModelGenerator {
       final listFieldName = relation.fieldNameInThisModel;
       buffer.writeln('    this.$listFieldName,');
     }
-    buffer.writeln('  }) : super({');
+    buffer.write('  })');
 
-    // 1. Add direct column values, keyed by their original database column name.
+    // Build the initializer list
+    final List<String> initializers = [];
+    initializerListFields.forEach((fieldName, defaultValue) {
+      if (defaultValue.contains('DateTime')) {
+        initializers.add('this.$fieldName = $fieldName ?? $defaultValue');
+      }
+    });
+
+    // Build the map for the super constructor
+    final superInitializerMap = <String>[];
     for (final col in table.columns) {
-      // Use the existing localName.camelCase from SupabaseColumnInfo
       final dartFieldNameForColumnValue = col.localName.camelCase;
-      buffer.writeln(
-        "         '${col.originalName}': $dartFieldNameForColumnValue,",
+      superInitializerMap.add(
+        "'${col.originalName}': $dartFieldNameForColumnValue",
       );
     }
-
-    // 2. Add forward related model instances, keyed by the Dart field name for the relation.
     for (final fk in table.foreignKeys) {
-      // Use the 1-argument version of _getFieldNameFromFkColumn defined in this class
       final dartRelationFieldName = _getFieldNameFromFkColumn(
         fk.originalColumns.first,
       );
-      buffer.writeln(
-        "         '$dartRelationFieldName': $dartRelationFieldName,",
+      superInitializerMap.add(
+        "'$dartRelationFieldName': $dartRelationFieldName",
       );
     }
-
-    // 3. Add reverse related model lists, keyed by the Dart field name for the relation.
-    // This uses the _reverseRelationsMap populated in _preprocessRelations
     final reverseRelationsForThisTable =
         _reverseRelationsMap[table.originalName] ?? [];
     for (final revRelInfo in reverseRelationsForThisTable) {
-      final dartRelationFieldName =
-          revRelInfo.fieldNameInThisModel; // e.g., "bookAuthors" or "books"
-      buffer.writeln(
-        "         '$dartRelationFieldName': $dartRelationFieldName,",
+      final dartRelationFieldName = revRelInfo.fieldNameInThisModel;
+      superInitializerMap.add(
+        "'$dartRelationFieldName': $dartRelationFieldName",
       );
     }
+    initializers.add('super({${superInitializerMap.join(', ')}})');
 
-    buffer.writeln('       });');
+    buffer.writeln(' : ${initializers.join(',\n       ')};');
     buffer.writeln();
 
     // --- ID Getter Implementation ---
@@ -542,83 +559,57 @@ class ModelGenerator {
       '  factory $className.fromSqlite(Row row) {',
     ); // Input is a SQLite Row
 
-    // Assumes the JSON data is in a column named 'jsobjects'
-    buffer.writeln(
-      "    final String? jsonDataString = row['jsobjects'] as String?;",
-    );
-    buffer.writeln("    if (jsonDataString == null) {");
-    buffer.writeln(
-      "      // Or handle as an error, depending on expected data integrity. This might lead to issues if fields are required.",
-    );
-    buffer.writeln("      // For example, you could throw an exception: ");
-    buffer.writeln(
-      "      // throw ArgumentError('SQLite row is missing \'jsobjects\' column for $className deserialization.');",
-    );
-    buffer.writeln(
-      "      // Alternatively, if a model can be validly empty or with all nulls (if fields allow):",
-    );
-    buffer.writeln(
-      "      // return $className(/* pass all nulls or default values if constructor allows */);",
-    );
-    buffer.writeln(
-      "      // For now, we'll create an empty map, and let constructor validation handle missing required fields.",
-    );
-    buffer.writeln("    }");
-    buffer.writeln(
-      "    final Map<String, dynamic> json = jsonDataString == null ? <String, dynamic>{} : jsonDecode(jsonDataString) as Map<String, dynamic>;",
-    );
+    // --- Start: New logic for reading from individual columns and jsobjects ---
     buffer.writeln();
+    // --- End: New logic ---
 
     buffer.writeln('    return $className(');
 
-    // Populate direct columns from the parsed 'json' map
-    // The conversion logic should treat values within this 'json' map as if they came from a direct JSON source (not raw SQLite types)
+    // Populate direct columns by reading from the SQLite 'row' directly
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
-      final jsonKey =
-          column.originalName; // Key within the 'json' map (already snake_case)
+      final dbKey = column.originalName; // Key in the SQLite row
       buffer.write('      $fieldName: ');
       _generateFromJsonConversion(
         buffer,
         column,
-        jsonKey,
-        mapVariableName: 'json',
-        fromSqlite: false,
-      ); // fromSqlite is false because 'json' map contains parsed JSON values
+        dbKey,
+        mapVariableName: 'row',
+        fromSqlite: true, // Correctly set to true
+      );
       buffer.writeln(',');
     }
 
-    // Populate forward relation fields from the parsed 'json' map
-    // This logic is similar to how it's done in the .fromJson factory
+    // Populate forward relation fields from the parsed 'json' map (from 'jsobjects')
     for (final fk in table.foreignKeys) {
       final foreignTableInfo = _tableMap[fk.originalForeignTableName];
       if (foreignTableInfo != null) {
         final relatedModelClassName = _getDartClassName(foreignTableInfo);
         final fieldName = _getFieldNameFromFkColumn(fk.originalColumns.first);
-        // The key for the related object in the JSON (jsonKeyForRelatedObject)
-        // should match how it's structured by SupabaseSelectBuilderBase._buildRecursiveJson
-        // which uses the snake_case(fieldName) as the key for the nested object.
+        // Use the original foreign table name (snake_case) as the JSON key,
+        // or a specifically defined alias if your Supabase query uses one.
+        // For direct FK relations, Supabase often returns the related object
+        // keyed by the foreign table's name (snake_case) or the FK column name (if not ambiguous).
+        // The SupabaseSelectBuilderBase now uses snake_case(jsonKeyFromBuilder)
+        // where jsonKeyFromBuilder is often the Dart field name.
+        // So, we need to convert the Dart fieldName (camelCase) to snake_case for the JSON key.
         final jsonKeyForRelatedObject = fieldName.snakeCase;
         buffer.writeln(
-          '      $fieldName: json[\'$jsonKeyForRelatedObject\'] == null ? null : $relatedModelClassName.fromJson(json[\'$jsonKeyForRelatedObject\'] as Map<String, dynamic>),',
+          '      $fieldName: row[\'$jsonKeyForRelatedObject\'] == null ? null : $relatedModelClassName.fromSqlite(createRowFromMap(row[\'$jsonKeyForRelatedObject\'] as Map<String, dynamic>)),',
         );
       }
     }
 
     // Populate reverse relation fields from the parsed 'json' map (from 'jsobjects')
-    // This assumes 'jsobjects' contains the fully nested structure.
     for (final relation in reverseRelations) {
       final listFieldName =
           relation.fieldNameInThisModel; // This is camelCase (e.g., bookGenres)
       final itemModelClassName =
           relation
               .relatedModelClassName; // Junction model for M2M or target model for 1-M
-      // The JSON key from 'jsobjects' for reverse relations
-      // should match the key used when serializing to 'jsobjects'.
-      // This typically aligns with the snake_case version of the Dart field name.
       final jsonKeyForReverseRelation = listFieldName.snakeCase;
       buffer.writeln(
-        '      $listFieldName: (json[\'$jsonKeyForReverseRelation\'] as List<dynamic>?)?.map((e) => $itemModelClassName.fromJson(e as Map<String, dynamic>)).toList(),',
+        '      $listFieldName: (row[\'$jsonKeyForReverseRelation\'] as List<dynamic>?)?.map((e) => $itemModelClassName.fromSqlite(createRowFromMap(e as Map<String, dynamic>))).toList(),',
       );
     }
     buffer.writeln('    );');
@@ -681,29 +672,20 @@ class ModelGenerator {
     buffer.writeln('  /// Creates an input object for operations like insert, update, upsert.');
     buffer.writeln('  @override'); 
     buffer.writeln('  $inputClassName toInput() {');
-    buffer.writeln('    return $inputClassName(');
-    for (final column in table.columns) {
-      final fieldName = column.localName.camelCase;
-      buffer.writeln('      $fieldName: $fieldName,');
-    }
-    buffer.writeln('    );');
+    buffer.writeln('    return $inputClassName.fromModel(this);');
     buffer.writeln('  }');
     buffer.writeln();
 
     // --- copyWith Method ---
-    buffer.writeln(
-      '  /// Creates a copy of this instance with potentially modified fields.',
-    );
-    buffer.writeln('  @override');
+    buffer.writeln('  /// Creates a new instance of [$className] with updated fields.');
     buffer.writeln('  $className copyWith({');
+    // 1. Parameters for columns
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
-      final dartType = _mapPostgresToDartType(column.type, column.isNullable);
-      buffer.writeln(
-        '    $dartType${dartType.endsWith('?') ? '' : '?'} $fieldName,',
-      );
+      final dartType = _mapPostgresToDartType(column.type, true); // Nullable for copyWith
+      buffer.writeln('    $dartType $fieldName,');
     }
-    // Forward relation fields
+    // 2. Parameters for forward relationships
     for (final fk in table.foreignKeys) {
       final foreignTableInfo = _tableMap[fk.originalForeignTableName];
       if (foreignTableInfo != null) {
@@ -712,7 +694,8 @@ class ModelGenerator {
         buffer.writeln('    $relatedModelClassName? $fieldName,');
       }
     }
-    // Reverse relation fields
+    // 3. Parameters for reverse relationships
+    // final reverseRelations = _reverseRelationsMap[table.originalName] ?? [];
     for (final relation in reverseRelations) {
       final listFieldName = relation.fieldNameInThisModel;
       final itemModelClassName = relation.relatedModelClassName;
@@ -720,11 +703,12 @@ class ModelGenerator {
     }
     buffer.writeln('  }) {');
     buffer.writeln('    return $className(');
+    // 1. Assign column values
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
       buffer.writeln('      $fieldName: $fieldName ?? this.$fieldName,');
     }
-    // Forward relation fields
+    // 2. Assign forward relationship values
     for (final fk in table.foreignKeys) {
       final foreignTableInfo = _tableMap[fk.originalForeignTableName];
       if (foreignTableInfo != null) {
@@ -732,47 +716,42 @@ class ModelGenerator {
         buffer.writeln('      $fieldName: $fieldName ?? this.$fieldName,');
       }
     }
-    // Reverse relation fields
+    // 3. Assign reverse relationship values
     for (final relation in reverseRelations) {
       final listFieldName = relation.fieldNameInThisModel;
-      buffer.writeln(
-        '      $listFieldName: $listFieldName ?? this.$listFieldName,',
-      );
+      buffer.writeln('      $listFieldName: $listFieldName ?? this.$listFieldName,');
     }
     buffer.writeln('    );');
     buffer.writeln('  }');
     buffer.writeln();
-
+    
     // --- toString Method ---
     buffer.writeln('  @override');
     buffer.writeln('  String toString() {');
-    buffer.write("    return '$className(");
-    bool firstFieldToString = true;
+    buffer.write("    return '$inputClassName(");
+    bool firstField = true;
     for (final column in table.columns) {
-      if (!firstFieldToString) buffer.write(', ');
-      final fieldName = column.localName.camelCase;
-      buffer.write('$fieldName: \$$fieldName');
-      firstFieldToString = false;
-    }
-    // Forward relation fields
-    for (final fk in table.foreignKeys) {
-      final foreignTableInfo = _tableMap[fk.originalForeignTableName];
-      if (foreignTableInfo != null) {
-        if (!firstFieldToString) buffer.write(', ');
-        final fieldNameFK = _getFieldNameFromFkColumn(fk.originalColumns.first);
-        buffer.write('$fieldNameFK: \$$fieldNameFK');
-        firstFieldToString = false;
-      }
-    }
-    // Reverse relation fields
-    for (final relation in reverseRelations) {
-      if (!firstFieldToString) buffer.write(', ');
-      final fieldName = relation.fieldNameInThisModel;
-      buffer.write('$fieldName: \$$fieldName');
-      firstFieldToString = false;
+      if (!firstField) buffer.write(', ');
+      buffer.write('${column.localName.camelCase}: \$${column.localName.camelCase}');
+      firstField = false;
     }
     buffer.writeln(")';");
     buffer.writeln('  }');
+
+    buffer.writeln();
+    buffer.writeln('  @override');
+    buffer.writeln('  List<Object?> get props => [');
+    for (final column in table.columns) {
+      buffer.writeln('        ${column.localName.camelCase},');
+    }
+    for (final fk in table.foreignKeys) {
+      final fieldName = _getFieldNameFromFkColumn(fk.originalColumns.first);
+      buffer.writeln('        $fieldName,');
+    }
+    for (final relation in reverseRelations) {
+      buffer.writeln('        ${relation.fieldNameInThisModel},');
+    }
+    buffer.writeln('      ];');
 
     buffer.writeln('}'); // End class $className
 
@@ -787,13 +766,20 @@ class ModelGenerator {
     buffer.writeln();
     buffer.writeln('/// Input class for `$modelClassName` operations (insert, update, upsert).');
     buffer.writeln('/// All fields are optional for flexibility in partial updates.');
-    buffer.writeln('class $inputClassName extends TetherModelInput<$inputClassName, $modelClassName> {');
+    buffer.writeln('class $inputClassName extends TetherModelInput<$inputClassName, $modelClassName> with EquatableMixin {');
 
     // --- Fields for table columns only (no relationships) ---
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
-      // Make all types nullable by ensuring they end with '?'
-      final dartType = _mapPostgresToDartType(column.type, true); // Force nullable
+      final pgType = column.type.toLowerCase();
+      String dartType;
+
+      if (pgType == 'geometry') {
+        dartType = 'String?'; // Accept a string for geometry input
+      } else {
+        // Make all other types nullable
+        dartType = _mapPostgresToDartType(column.type, true);
+      }
       buffer.writeln('  final $dartType $fieldName;');
     }
     buffer.writeln();
@@ -813,7 +799,13 @@ class ModelGenerator {
     buffer.writeln('    return $inputClassName(');
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
-      buffer.writeln('      $fieldName: model.$fieldName,');
+      final pgType = column.type.toLowerCase();
+      if (pgType == 'geometry') {
+        // Convert the GeoJson object from the model to a WKB string for the input object.
+        buffer.writeln('      $fieldName: model.$fieldName?.toWKB(),');
+      } else {
+        buffer.writeln('      $fieldName: model.$fieldName,');
+      }
     }
     buffer.writeln('    );');
     buffer.writeln('  }');
@@ -832,6 +824,10 @@ class ModelGenerator {
       final pgType = column.type.toLowerCase();
       if (pgType.startsWith('timestamp') || pgType == 'date') {
         buffer.writeln('      map[\'$jsonKey\'] = $fieldName?.toIso8601String();');
+      } else if (pgType == 'geometry') {
+        // The input is a string, which we assume is a valid GeoJSON string
+        // that Supabase can process directly.
+        buffer.writeln('      map[\'$jsonKey\'] = $fieldName;');
       } else if (pgType == 'json' || pgType == 'jsonb') {
         buffer.writeln('      map[\'$jsonKey\'] = $fieldName;');
       } else if (pgType.endsWith('[]')) {
@@ -861,6 +857,9 @@ class ModelGenerator {
         buffer.writeln('      map[\'$sqliteKey\'] = $fieldName?.toIso8601String();');
       } else if (pgType == 'boolean' || pgType == 'bool') {
         buffer.writeln('      map[\'$sqliteKey\'] = $fieldName == null ? null : ($fieldName! ? 1 : 0);');
+      } else if (pgType == 'geometry') {
+        // The input is a string, which can be stored directly in SQLite.
+        buffer.writeln('      map[\'$sqliteKey\'] = $fieldName;');
       } else if (pgType == 'json' || pgType == 'jsonb' || pgType.endsWith('[]')) {
         buffer.writeln('      map[\'$sqliteKey\'] = jsonEncode($fieldName);');
       } else {
@@ -874,16 +873,25 @@ class ModelGenerator {
     buffer.writeln();
 
     // --- copyWith Method ---
+    buffer.writeln('  /// Creates a new instance of [$inputClassName] with updated fields.');
     buffer.writeln('  @override');
     buffer.writeln('  $inputClassName copyWith({');
+    // Parameters for columns ONLY. No relationships in Input classes.
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
-      // All parameters already nullable, no need for extra '?'
-      final dartType = _mapPostgresToDartType(column.type, true);
+      final pgType = column.type.toLowerCase();
+      String dartType;
+
+      if (pgType == 'geometry') {
+        dartType = 'String?';
+      } else {
+        dartType = _mapPostgresToDartType(column.type, true); // Nullable for copyWith
+      }
       buffer.writeln('    $dartType $fieldName,');
     }
     buffer.writeln('  }) {');
     buffer.writeln('    return $inputClassName(');
+    // Assign column values ONLY.
     for (final column in table.columns) {
       final fieldName = column.localName.camelCase;
       buffer.writeln('      $fieldName: $fieldName ?? this.$fieldName,');
@@ -899,12 +907,19 @@ class ModelGenerator {
     bool firstField = true;
     for (final column in table.columns) {
       if (!firstField) buffer.write(', ');
-      final fieldName = column.localName.camelCase;
-      buffer.write('$fieldName: \$$fieldName');
+      buffer.write('${column.localName.camelCase}: \$${column.localName.camelCase}');
       firstField = false;
     }
     buffer.writeln(")';");
     buffer.writeln('  }');
+
+    buffer.writeln();
+    buffer.writeln('  @override');
+    buffer.writeln('  List<Object?> get props => [');
+    for (final column in table.columns) {
+      buffer.writeln('        ${column.localName.camelCase},');
+    }
+    buffer.writeln('      ];');
 
     buffer.writeln('}'); // End class ModelInput
   }
@@ -919,8 +934,18 @@ class ModelGenerator {
   }) {
     final pgType = column.type.toLowerCase();
     final isNullable = column.isNullable;
-    final valueAccess =
-        isNullable ? "$mapVariableName['$key']" : "$mapVariableName['$key']!";
+    final hasDefault = !isNullable && column.defaultValue != null && _convertDefaultValueToDart(column) != null;
+
+    // If the field has a default value in the constructor, we should not use '!'
+    // because the key might be missing, and we want to rely on the default.
+    // We cast to nullable and provide the model's default via the ?? operator.
+    final valueAccess = (isNullable || hasDefault)
+        ? "$mapVariableName['$key']"
+        : "$mapVariableName['$key']!";
+
+    if (hasDefault) {
+      buffer.write("$mapVariableName['$key'] == null ? ${_convertDefaultValueToDart(column)} : ");
+    }
 
     if (isNullable) {
       buffer.write("$mapVariableName['$key'] == null ? null : ");
@@ -944,10 +969,45 @@ class ModelGenerator {
         pgType.startsWith('decimal')) {
       buffer.write("($valueAccess as num).toDouble()");
     } else if (pgType == 'boolean' || pgType == 'bool') {
+      // When reading from SQLite, the value is an integer (0 or 1).
+      // When reading from JSON, it's a boolean.
+      buffer.write(
+        fromSqlite
+            ? "($valueAccess as int) == 1"
+            : "$valueAccess as bool",
+      );
+    } else if (pgType == 'geometry') {
       if (fromSqlite) {
-        buffer.write("($valueAccess as int) == 1");
+        buffer.write(
+          "GeoJson.fromJson(jsonDecode($valueAccess as String) as Map<String, dynamic>)",
+        );
       } else {
-        buffer.write("$valueAccess as bool");
+        buffer.write(
+          "GeoJson.fromJson($valueAccess as Map<String, dynamic>)",
+        );
+      }
+    } else if (pgType.endsWith('[]')) {
+      // Handles specific arrays like 'text[]', 'integer[]', 'json[]', 'jsonb[]'
+      String basePgType = pgType.substring(0, pgType.length - 2);
+      String dartListElementType = _mapPostgresToDartType(basePgType, false);
+
+      // Special handling for json/jsonb arrays to cast elements correctly
+      String elementMapExpression;
+      if (basePgType == 'json' || basePgType == 'jsonb') {
+        elementMapExpression = '(e) => e as Map<String, dynamic>';
+      } else {
+        elementMapExpression = '(e) => e as $dartListElementType';
+      }
+
+      if (fromSqlite) {
+        buffer.write(
+          "List<$dartListElementType>.from((jsonDecode($valueAccess as String) as List<dynamic>).map($elementMapExpression))",
+        );
+      } else {
+        // Assumes JSON from Supabase might be a List<dynamic> or a String to be decoded
+        buffer.write(
+          "($valueAccess is List<dynamic> ? List<$dartListElementType>.from(($valueAccess as List<dynamic>).map($elementMapExpression)) : List<$dartListElementType>.from((jsonDecode($valueAccess as String) as List<dynamic>).map($elementMapExpression)))",
+        );
       }
     } else if (pgType == 'json' || pgType == 'jsonb') {
       if (fromSqlite) {
@@ -970,21 +1030,6 @@ class ModelGenerator {
         // Assumes JSON from Supabase might be a List<dynamic> or a String to be decoded
         buffer.write(
           "($valueAccess is List<dynamic> ? List<String>.from($valueAccess.map((e) => e as String)) : List<String>.from((jsonDecode($valueAccess as String) as List<dynamic>).map((e) => e as String)))",
-        );
-      }
-    } else if (pgType.endsWith('[]')) {
-      // Handles specific arrays like 'text[]', 'integer[]'
-      String basePgType = pgType.substring(0, pgType.length - 2);
-      String dartListElementType = _mapPostgresToDartType(basePgType, false);
-
-      if (fromSqlite) {
-        buffer.write(
-          "List<$dartListElementType>.from((jsonDecode($valueAccess as String) as List<dynamic>).map((e) => e as $dartListElementType))",
-        );
-      } else {
-        // Assumes JSON from Supabase might be a List<dynamic> or a String to be decoded
-        buffer.write(
-          "($valueAccess is List<dynamic> ? List<$dartListElementType>.from(($valueAccess as List<dynamic>).map((e) => e as $dartListElementType)) : List<$dartListElementType>.from((jsonDecode($valueAccess as String) as List<dynamic>).map((e) => e as $dartListElementType)))",
         );
       }
     } else if (pgType == 'text' ||
@@ -1026,6 +1071,20 @@ class ModelGenerator {
       } else {
         // JSON: true or false boolean
         buffer.write(fieldName);
+      }
+    } else if (pgType == 'geometry') {
+      if (target == 'sqlite') {
+        buffer.write(
+          isNullable
+              ? "$fieldName == null ? null : jsonEncode($fieldName?.toJson())"
+              : "jsonEncode($fieldName.toJson())",
+        );
+      } else {
+        buffer.write(
+          isNullable
+              ? "$fieldName?.toJson()"
+              : "$fieldName.toJson()",
+        );
       }
     } else if (pgType == 'json' || pgType == 'jsonb' || pgType.endsWith('[]')) {
       if (target == 'sqlite') {
@@ -1081,6 +1140,8 @@ class ModelGenerator {
       baseType = 'double';
     } else if (pgType == 'boolean' || pgType == 'bool') {
       baseType = 'bool';
+    } else if (pgType == 'geometry') {
+      baseType = 'GeoJson';
     } else if (pgType == 'json' || pgType == 'jsonb') {
       baseType = 'Map<String, dynamic>';
     } else if (pgType == 'text' ||
@@ -1130,6 +1191,52 @@ class ModelGenerator {
       return '${word.substring(0, word.length - 1)}ies';
     }
     return '${word}s';
+  }
+
+  /// Converts a string default value from the database schema to a Dart expression.
+  String? _convertDefaultValueToDart(TetherColumnInfo column) {
+    if (column.defaultValue == null) return null;
+
+    String defaultValue = column.defaultValue!;
+    final pgType = column.type.toLowerCase();
+
+    // Handle now() for timestamps
+    if (defaultValue.toLowerCase().contains('now()')) {
+      return 'DateTime.now()';
+    }
+
+    // Handle booleans
+    if (pgType == 'boolean' || pgType == 'bool') {
+      if (defaultValue.toLowerCase() == 'true') return 'true';
+      if (defaultValue.toLowerCase() == 'false') return 'false';
+    }
+
+    // Handle numeric types
+    if (pgType.startsWith('int') || pgType == 'serial' || pgType == 'smallint' || pgType == 'bigint' || pgType.startsWith('float') || pgType == 'real' || pgType == 'double precision' || pgType.startsWith('numeric') || pgType.startsWith('decimal')) {
+      if (num.tryParse(defaultValue) != null) {
+        return defaultValue;
+      }
+    }
+
+    // Handle string literals, which often come with casting like ::text
+    final match = RegExp(r"^'([^']*)'::\w+").firstMatch(defaultValue);
+    if (match != null) {
+      return "'${match.group(1)}'";
+    }
+    
+    // Handle simple quoted strings
+    if (defaultValue.startsWith("'") && defaultValue.endsWith("'")) {
+      return defaultValue;
+    }
+
+    // Fallback for other cases (e.g., empty array, empty json)
+    if (defaultValue == "'{}'::jsonb" || defaultValue == "'{}'::json") return 'const {}';
+    if (defaultValue == "'[]'::text[]") return 'const []';
+
+
+    // If we can't determine a safe default, return null so the field remains required.
+    _logger.info("Could not convert default value '$defaultValue' for column '${column.originalName}' to a Dart equivalent. Field will remain required.");
+    return null;
   }
 } // End ModelGenerator class
 

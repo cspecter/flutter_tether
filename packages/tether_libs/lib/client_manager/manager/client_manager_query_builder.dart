@@ -18,6 +18,7 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     required super.localDb,
     required super.client,
     required this.supabase,
+    required super.baseSupabase,
     required super.tableSchemas,
     required super.fromJsonFactory,
     required super.fromSqliteFactory,
@@ -33,6 +34,7 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     SqlOperationType? type,
     SqlStatement? localQuery,
     SelectBuilderBase? selectorStatement,
+    TetherModelInputBase? updatePayload,
   }) {
     return ClientManagerFilterBuilder(
       tableName: tableName,
@@ -40,6 +42,7 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
       localDb: localDb,
       client: client,
       supabase: supabase,
+      baseSupabase: baseSupabase,
       tableSchemas: tableSchemas,
       type: type ?? this.type,
       selector: selector,
@@ -47,12 +50,13 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
       selectorStatement: selectorStatement ?? this.selectorStatement,
       fromJsonFactory: fromJsonFactory,
       fromSqliteFactory: fromSqliteFactory,
+      updatePayload: updatePayload,
     );
   }
 
   ClientManagerFilterBuilder<TModel> select(SelectBuilderBase select) {
     final PostgrestFilterBuilder<List<Map<String, dynamic>>> supabaseBuilder =
-        supabase.select(select.buildSupabase());
+        baseSupabase.select(select.buildSupabase());
 
     return _copyWithQuery(
       supabase: supabaseBuilder, // Pass the wrapped Drift statement
@@ -62,12 +66,12 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     );
   }
 
-  ClientManagerFilterBuilder<TModel> insert<TInput extends TetherModelInput<TInput, TModel>>(
-    List<TInput> values, {
+  ClientManagerFilterBuilder<TModel> insert(
+    List<TetherModelInputBase> values, {
     bool defaultToNull = true,
   }) {
     return _copyWithQuery(
-      supabase: supabase.insert(
+      supabase: baseSupabase.insert(
         values.map((e) => e.toJson()).toList(),
         defaultToNull: defaultToNull,
       ),
@@ -77,35 +81,40 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     );
   }
 
-  ClientManagerFilterBuilder<TModel> upsert<TInput extends TetherModelInput<TInput, TModel>>(
-    TInput value, {
+  ClientManagerFilterBuilder<TModel> upsert(
+    TetherModelInputBase value, {
     String? onConflict,
     bool ignoreDuplicates = false,
     bool defaultToNull = true,
   }) {
-    // supabase.upsert returns PostgrestFilterBuilder<dynamic>, which now matches _copyWithQuery
+    final localSql = ClientManagerSqlUtils.buildUpsertSql(
+      [value],
+      tableName,
+      tableSchemas: tableSchemas,
+      defaultToNull: defaultToNull,
+    );
+
     return _copyWithQuery(
-      supabase: supabase.upsert(
+      supabase: baseSupabase.upsert(
         value.toJson(),
         onConflict: onConflict,
         ignoreDuplicates: ignoreDuplicates,
         defaultToNull: defaultToNull,
       ),
-      // No initial driftSelect for upsert
       type: SqlOperationType.upsert,
-      localQuery: ClientManagerSqlUtils.buildUpdateSql(value, tableName),
+      localQuery: localSql,
     );
   }
 
-  ClientManagerFilterBuilder<TModel> update<TInput extends TetherModelInput<TInput, TModel>>({
-    required TInput value,
-  }) {
-    // supabase.update returns PostgrestFilterBuilder<dynamic>, which now matches _copyWithQuery
+  ClientManagerFilterBuilder<TModel> update(
+    TetherModelInputBase value,
+  ) {
+    // For update, the localQuery's SET and WHERE clauses are built by the
+    // filter builder methods. We pass the update payload here.
     return _copyWithQuery(
-      supabase: supabase.update(value.toJson()),
-      // No initial driftSelect for update
+      supabase: baseSupabase.update(value.toJson()),
       type: SqlOperationType.update,
-      localQuery: ClientManagerSqlUtils.buildUpdateSql(value, tableName),
+      updatePayload: value, // Pass the update payload
     );
   }
 
@@ -114,11 +123,11 @@ class ClientManagerQueryBuilder<TModel extends TetherModel<TModel>>
     String idColumnName = 'id',
   }) {
     if (id is! String && id is! int) {
-    throw ArgumentError('ID must be either a String or an int');
-  }
+      throw ArgumentError('ID must be either a String or an int');
+    }
 
     return _copyWithQuery(
-      supabase: supabase.delete().eq('id', id),
+      supabase: baseSupabase.delete().eq('id', id),
       type: SqlOperationType.delete,
       localQuery: ClientManagerSqlUtils.buildDeleteSql(
         tableName,

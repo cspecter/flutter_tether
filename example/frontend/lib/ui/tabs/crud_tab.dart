@@ -74,7 +74,7 @@ class _CrudTabState extends ConsumerState<CrudTab> {
         } else {
           // Update
           await genreManager.query
-              .update(value: genreData.toInput())
+              .update(genreData.toInput())
               .eq(GenresColumn.id, genreData.id);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(

@@ -375,7 +375,8 @@ class AuthManager<TProfileModel extends TetherModel<TProfileModel>> {
 
   /// Upserts (inserts or updates) the user's profile into the local SQLite database.
   ///
-  /// It first deletes any existing profile to ensure only one is present.
+  /// Uses an `INSERT ... ON CONFLICT` statement to perform an atomic upsert,
+  /// ensuring the profile is correctly created or updated based on its primary key.
   Future<void> _upsertProfileToLocalDb(TProfileModel profileModel) async {
     // Construct the key for tableSchemas, typically 'public.tableName'
     final profileTableSchemaKey = 'public.$_supabaseProfileTableName';
@@ -388,23 +389,51 @@ class AuthManager<TProfileModel extends TetherModel<TProfileModel>> {
       return;
     }
 
+    final pkColumns =
+        profileTableInfo.primaryKeys.map((pk) => pk.originalName).toList();
+    if (pkColumns.isEmpty) {
+      _logger.severe(
+        "Configuration error: No primary key found for table '$_localProfileTableName'. Cannot perform upsert.",
+      );
+      return;
+    }
+
     try {
-      // Clear existing profile data first to ensure only one profile is stored locally.
-      // This simplifies logic by always inserting, effectively an upsert for a single-row table.
-      await _localDb.execute('DELETE FROM $_localProfileTableName');
-      _logger.info(
-        'Cleared existing data from local profile table: $_localProfileTableName',
-      );
+      final data = profileModel.toSqlite();
+      if (data.isEmpty) {
+        _logger.warning('Profile model converted to an empty map. Skipping upsert.');
+        return;
+      }
 
-      // Use ClientManagerSqlUtils.buildInsertSql for consistency,
-      // even though it's a single record. It expects a list.
+      final columns = data.keys.toList();
+      final columnNames = columns.join(', ');
+      final placeholders = List.filled(columns.length, '?').join(', ');
+      final pkColumnNames = pkColumns.join(', ');
 
-      final insertStatement = ClientManagerSqlUtils.buildInsertSqlFromModel(
-        [profileModel],
-        _localProfileTableName, // Use the designated local table name
-      );
-      final finalSql = insertStatement.build();
-      await _localDb.execute(finalSql.sql, finalSql.arguments);
+      // Columns to update are all columns except the primary key columns.
+      final updateColumns =
+          columns.where((col) => !pkColumns.contains(col)).toList();
+
+      // If there are no columns to update (e.g., table is only a primary key),
+      // we can do an INSERT OR IGNORE. Otherwise, we build the UPDATE SET clause.
+      String sql;
+      if (updateColumns.isEmpty) {
+        sql = '''
+          INSERT OR IGNORE INTO $_localProfileTableName ($columnNames)
+          VALUES ($placeholders)
+        ''';
+      } else {
+        final updateSet =
+            updateColumns.map((col) => '$col = excluded.$col').join(', ');
+        sql = '''
+          INSERT INTO $_localProfileTableName ($columnNames)
+          VALUES ($placeholders)
+          ON CONFLICT($pkColumnNames) DO UPDATE SET
+          $updateSet
+        ''';
+      }
+
+      await _localDb.execute(sql, data.values.toList());
       _logger.info(
         'Profile successfully upserted to local DB table: $_localProfileTableName.',
       );

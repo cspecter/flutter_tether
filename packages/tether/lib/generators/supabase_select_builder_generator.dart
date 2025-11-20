@@ -239,6 +239,7 @@ class SupabaseSelectBuilderGenerator {
     );
 
     final Set<String> imports = {
+      "import 'package:equatable/equatable.dart';",
       "import 'package:tether_libs/models/supabase_select_builder_base.dart';",
       "import '$schemaFileName'; // Import the generated schema",
     };
@@ -272,13 +273,17 @@ class SupabaseSelectBuilderGenerator {
     final sb = StringBuffer();
     final enumName = StringUtils.toClassName(table.name, suffix: 'Column');
     final tableName = table.originalName;
+    final className = StringUtils.toClassName(
+      table.name,
+      suffix: 'SelectBuilder',
+    );
 
     sb.writeln('enum $enumName implements TetherColumn {');
 
     for (final column in table.columns) {
       final enumValueName = StringUtils.toCamelCase(column.localName);
       sb.writeln(
-        "  $enumValueName('${column.originalName}', '${column.localName}', '$tableName', null),",
+        "  $enumValueName('${column.originalName}', '${column.localName}'),"
       );
     }
 
@@ -288,16 +293,16 @@ class SupabaseSelectBuilderGenerator {
     sb.writeln('  @override');
     sb.writeln('  final String localName;');
     sb.writeln('  @override');
-    sb.writeln('  final String tableName;');
+    sb.writeln("  final String tableName = '$tableName';");
     sb.writeln('  @override');
-    sb.writeln('  final String? relationshipPrefix;');
+    sb.writeln('  final String? relationshipPrefix = null;');
+    sb.writeln('  @override');
+    sb.writeln('  final String? tableAlias = null; // Enums are constant, so alias is null here');
     sb.writeln();
-    sb.writeln(
-      '  const $enumName(this.originalName, this.localName, this.tableName, this.relationshipPrefix);',
-    );
+    sb.writeln('  const $enumName(this.originalName, this.localName);');
     sb.writeln();
     sb.writeln('  @override');
-    sb.writeln('  String get dbName => originalName;');
+    sb.writeln('  String get dbName => tableAlias != null ? \'\$tableAlias.\$originalName\' : \'\$originalName\';');
     sb.writeln();
     sb.writeln('  @override');
     sb.writeln('  String get dartName => localName;');
@@ -306,15 +311,34 @@ class SupabaseSelectBuilderGenerator {
     sb.writeln('  String get qualified => \'$tableName.\$originalName\';');
     sb.writeln();
     sb.writeln('  @override');
-    sb.writeln(
-      '  String get fullyQualified => relationshipPrefix != null ? \'\$relationshipPrefix.\$dbName\' : dbName;',
-    );
+    sb.writeln('  String fullyQualified(String? prefix) {');
+    sb.writeln('    if (prefix == tableName) {');
+    sb.writeln('      return dbName;');
+    sb.writeln('    } else if (prefix != null && prefix.isNotEmpty) {');
+    sb.writeln('      return "\$tableName.\$dbName";');
+    sb.writeln('    }');
+    sb.writeln('    return relationshipPrefix != null ? "\$relationshipPrefix.\$dbName" : dbName;');
+    sb.writeln('  }');
     sb.writeln();
     sb.writeln('  @override');
-    sb.writeln(
-      '  TetherColumn related(String relationshipName) => RelatedColumnRef(originalName, localName, tableName, relationshipName);',
-    );
+    sb.writeln('  TetherColumn related(String relationshipName) => RelatedColumnRef(originalName, localName, tableName, relationshipName);');
+    sb.writeln();
+    sb.writeln('  @override');
+    sb.writeln('  TetherColumn withAlias(String? alias) {');
+    sb.writeln('    return RelatedColumnRef(originalName, localName, tableName, relationshipPrefix, tableAlias: alias);');
+    sb.writeln('  }');
     sb.writeln('}');
+
+// Add an extension on SelectBuilderBase to include the getAliasForTable method.
+    sb.writeln('extension ${className}Alias on SelectBuilderBase {');
+    sb.writeln('  String? getAliasForTable(String tableName) {');
+    sb.writeln(
+      '    return tableName == currentTableInfo.originalName ? tableAlias : null;',
+    );
+    sb.writeln('  }');
+    sb.writeln('}');
+    sb.writeln();
+
     return sb.toString();
   }
 
@@ -328,7 +352,7 @@ class SupabaseSelectBuilderGenerator {
     final tableUniqueKey =
         '${table.schema}.${table.originalName}'; // Use originalName for consistency
 
-    sb.writeln('class $className extends SelectBuilderBase {');
+    sb.writeln('class $className extends SelectBuilderBase with EquatableMixin {');
     sb.writeln();
     // Constructor looks up its SupabaseTableInfo from globalSupabaseSchema
     // and passes it to the super constructor.
@@ -343,7 +367,7 @@ class SupabaseSelectBuilderGenerator {
     sb.writeln('      selectAll();');
     sb.writeln('    } else {');
     sb.writeln(
-      '      final dbColumnNames = columns.map((e) => e.dbName).toList();',
+      '      final dbColumnNames = columns.map((e) => e.originalName).toList();',
     );
     sb.writeln('      selectSupabaseColumns(dbColumnNames);');
     sb.writeln('    }');
@@ -523,6 +547,16 @@ class SupabaseSelectBuilderGenerator {
       sb.writeln('  }');
       sb.writeln();
     }
+
+    sb.writeln('  @override');
+    sb.writeln('  List<Object?> get props => [');
+    sb.writeln('        primaryTableKey,');
+    sb.writeln('        tableAlias,');
+    sb.writeln('        selectAllPrimary,');
+    sb.writeln('        selectedPrimaryColumns,');
+    sb.writeln('        supabaseRelatedBuilders,');
+    sb.writeln('      ];');
+    sb.writeln();
 
     sb.writeln('}');
     return sb.toString();

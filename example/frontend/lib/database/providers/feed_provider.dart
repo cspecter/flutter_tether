@@ -4,6 +4,8 @@
 import 'dart:convert';
 
 import 'package:equatable/equatable.dart';
+import 'package:tether_libs/client_manager/manager/client_manager_query_builder.dart';
+import 'package:tether_libs/client_manager/manager/client_manager_transform_builder.dart';
 import 'package:tether_libs/models/supabase_select_builder_base.dart';
 import 'package:tether_libs/models/tether_model.dart';
 import 'package:tether_libs/utils/logger.dart';
@@ -18,8 +20,44 @@ import '../database.dart';
 import '../managers/feed_item_reference_manager.g.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-typedef QueryBuilderFactory<TModel extends TetherModel<TModel>> =
-    ClientManagerFilterBuilder<TModel> Function();
+typedef QueryBuilderFactory<TModel extends TetherModel<TModel>>
+    = ClientManagerFilterBuilder<TModel> Function();
+
+/// A class that wraps the feed data with additional state information
+class FeedStreamState<TModel extends TetherModel<TModel>> {
+  final List<TModel> data;
+  final String? error;
+  final int? count;
+  final bool isLoading;
+
+  const FeedStreamState({
+    required this.data,
+    this.error,
+    this.count,
+    this.isLoading = false,
+  });
+
+  bool get hasError => error != null && error!.isNotEmpty;
+
+  FeedStreamState<TModel> copyWith({
+    List<TModel>? data,
+    String? error,
+    int? count,
+    bool? isLoading,
+  }) {
+    return FeedStreamState<TModel>(
+      data: data ?? this.data,
+      error: error ?? this.error,
+      count: count ?? this.count,
+      isLoading: isLoading ?? this.isLoading,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'FeedStreamState(data: ${data.length} items, error: $error, count: $count, isLoading: $isLoading)';
+  }
+}
 
 class FeedStreamNotifierSettings<TModel extends TetherModel<TModel>>
     extends Equatable {
@@ -31,9 +69,8 @@ class FeedStreamNotifierSettings<TModel extends TetherModel<TModel>>
   final TModel Function(Map<String, dynamic> json) fromJsonFactory;
   final ClientManagerFilterBuilder<TModel> Function(
     ClientManagerFilterBuilder<TModel> baseQuery,
-  )?
-  queryCustomizer; // This can define the "base filtered view"
-  
+  )? queryCustomizer; // This can define the "base filtered view"
+
   // New ordering fields
   final TetherColumn? defaultOrderColumn;
   final bool defaultOrderAscending;
@@ -54,22 +91,22 @@ class FeedStreamNotifierSettings<TModel extends TetherModel<TModel>>
 
   @override
   List<Object?> get props => [
-    feedKey,
-    searchColumn,
-    pageSize,
-    clientManager, // Relies on stable identity from its provider
-    selectArgs, // Relies on stable identity (e.g., const)
-    fromJsonFactory, // Static methods have stable identity
-    queryCustomizer, // Needs stable identity if provided
-    defaultOrderColumn, // Add to props
-    defaultOrderAscending,
-    defaultOrderNullsFirst,
-  ];
+        feedKey,
+        searchColumn,
+        pageSize,
+        clientManager, // Relies on stable identity from its provider
+        selectArgs, // Relies on stable identity (e.g., const)
+        fromJsonFactory, // Static methods have stable identity
+        queryCustomizer, // Needs stable identity if provided
+        defaultOrderColumn, // Add to props
+        defaultOrderAscending,
+        defaultOrderNullsFirst,
+      ];
 }
 
 class FeedStreamNotifier<TModel extends TetherModel<TModel>>
-    extends
-        FamilyStreamNotifier<List<TModel>, FeedStreamNotifierSettings<TModel>> {
+    extends FamilyStreamNotifier<FeedStreamState<TModel>,
+        FeedStreamNotifierSettings<TModel>> {
   late FeedStreamNotifierSettings<TModel> _currentSettings;
 
   int currentPage = 0;
@@ -79,13 +116,16 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
 
   // Track the total count from remote
   int? _totalRemoteCount;
+  // Track loading state
+  bool _isLoading = false;
+  // Track error state
+  String? _error;
 
   // For dynamic filters applied on top of queryCustomizer
   ClientManagerFilterBuilder<TModel> Function(
     ClientManagerFilterBuilder<TModel> query,
-  )?
-  _dynamicFilterApplicator;
-  
+  )? _dynamicFilterApplicator;
+
   // New ordering state variables
   TetherColumn? _orderColumn;
   bool _orderAscending = true;
@@ -95,37 +135,38 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     // Initialization in build
   }
 
-  ClientManagerFilterBuilder<TModel> _getEffectiveQueryBuilder() {
-    // 1. Start with the absolute base query from settings
-    var query = _currentSettings.clientManager.query.select(
+  ClientManagerTransformBuilder<TModel> _getEffectiveQueryBuilder() {
+    // 1. Start with the absolute base query from settings.
+    ClientManagerFilterBuilder<TModel> filterQuery =
+        _currentSettings.clientManager.query.select(
       _currentSettings.selectArgs,
     );
 
     // 2. Apply the "base query modifications" (static customizer) from settings
     if (_currentSettings.queryCustomizer != null) {
-      query = _currentSettings.queryCustomizer!(query);
+      filterQuery = _currentSettings.queryCustomizer!(filterQuery);
     }
 
     // 3. Apply dynamic filters if any are set
     if (_dynamicFilterApplicator != null) {
-      query = _dynamicFilterApplicator!(query);
+      filterQuery = _dynamicFilterApplicator!(filterQuery);
     }
 
     // 4. Apply search terms if search is configured and terms are present
     if (_currentSettings.searchColumn != null && terms.isNotEmpty) {
-      query = query.textSearch(_currentSettings.searchColumn!, terms);
+      // textSearch is available on ClientManagerFilterBuilder
+      filterQuery = filterQuery.textSearch(_currentSettings.searchColumn!, terms);
     }
-    
-    // 5. Apply ordering if set
+
+    // 5. Apply ordering if set. The result is a TransformBuilder, so we assign it to a new variable.
+    ClientManagerTransformBuilder<TModel> transformQuery = filterQuery;
     if (_orderColumn != null) {
-      query = query.order(
-        _orderColumn!, 
-        ascending: _orderAscending, 
-        nullsFirst: _orderNullsFirst
-      ) as ClientManagerFilterBuilder<TModel>;
+      // .order() is available on the parent ClientManagerTransformBuilder
+      transformQuery = transformQuery.order(_orderColumn!,
+          ascending: _orderAscending, nullsFirst: _orderNullsFirst);
     }
-    
-    return query;
+
+    return transformQuery;
   }
 
   // Helper to get the query structure for feedStream's JSON sub-select
@@ -144,20 +185,24 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
 
   /// Check if there are more items available to fetch
   bool get _hasMoreItems {
-    if (_totalRemoteCount == null)
+    if (_totalRemoteCount == null) {
       return true; // Unknown count, assume more available
+    }
     return _currentItemCount < _totalRemoteCount!;
   }
 
   @override
-  Stream<List<TModel>> build(FeedStreamNotifierSettings<TModel> arg) async* {
+  Stream<FeedStreamState<TModel>> build(
+      FeedStreamNotifierSettings<TModel> arg) async* {
     _currentSettings = arg;
     currentPage = 0;
     terms = '';
     _dynamicFilterApplicator = null; // Reset dynamic filters
     _totalRemoteCount = null; // Reset count tracking
     _isDisposed = false;
-    
+    _isLoading = false;
+    _error = null;
+
     // Initialize ordering from settings
     _orderColumn = arg.defaultOrderColumn;
     _orderAscending = arg.defaultOrderAscending;
@@ -167,21 +212,43 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
       _isDisposed = true;
     });
 
-    final count = await _getCount();
-    if (_isDisposed) return;
+    // Yield initial loading state
+    yield FeedStreamState<TModel>(
+      data: <TModel>[],
+      error: null,
+      count: null,
+      isLoading: true,
+    );
 
-    if (count == 0) {
-      await refreshFeed(initialize: true);
-    } else {
-      await refreshFeed();
+    try {
+      final count = await _getCount();
+      if (_isDisposed) return;
+
+      if (count == 0) {
+        await refreshFeed(initialize: true);
+      } else {
+        await refreshFeed();
+      }
+      if (_isDisposed) return;
+
+      // Now yield the actual data stream
+      yield* _buildFeedStreamState();
+    } catch (e) {
+      if (!_isDisposed) {
+        _isLoading = false;
+        _error = e.toString();
+        yield FeedStreamState<TModel>(
+          data: <TModel>[],
+          error: _error,
+          count: _totalRemoteCount,
+          isLoading: false,
+        );
+      }
     }
-    if (_isDisposed) return;
-
-    yield* feedStream;
   }
 
-  Stream<List<TModel>> get feedStream async* {
-    final appDatabase = ref.watch(databaseProvider).value!;
+  Stream<FeedStreamState<TModel>> _buildFeedStreamState() async* {
+    final appDatabase = ref.watch(databaseProvider);
     final sqliteDb = appDatabase.db as SqliteDatabase;
 
     // Use the base query (with static customizer) for determining table name and selector for SQL
@@ -193,7 +260,12 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
       _logger.severe(
         "SearchStreamNotifier: selectorStatement is null in feedStream for $modelTableName. This indicates a setup error with base query.",
       );
-      yield <TModel>[];
+      yield FeedStreamState<TModel>(
+        data: <TModel>[],
+        error: "Setup error: selectorStatement is null",
+        count: _totalRemoteCount,
+        isLoading: false,
+      );
       return;
     }
 
@@ -204,7 +276,12 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
       _logger.severe(
         "SearchStreamNotifier: Table ${selector.currentTableInfo.originalName} has no primary keys defined. Cannot build feedStream SQL.",
       );
-      yield <TModel>[];
+      yield FeedStreamState<TModel>(
+        data: <TModel>[],
+        error: "Setup error: No primary keys defined",
+        count: _totalRemoteCount,
+        isLoading: false,
+      );
       return;
     }
     final String modelPrimaryKeyCol =
@@ -238,12 +315,21 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
         fir.display_order ASC;
     ''';
 
-    yield* sqliteDb.watch(sql, parameters: [modelTableName, _currentSettings.feedKey]).map<
-      List<TModel>
-    >((ResultSet rawData) {
-      // Explicit type for map's T and rawData
-      if (_isDisposed) return <TModel>[];
-      return rawData
+    yield* sqliteDb.watch(sql, parameters: [
+      modelTableName,
+      _currentSettings.feedKey
+    ]).map<FeedStreamState<TModel>>((ResultSet rawData) {
+      // Process the raw data into a list of models
+      if (_isDisposed) {
+        return FeedStreamState<TModel>(
+          data: <TModel>[],
+          error: _error,
+          count: _totalRemoteCount,
+          isLoading: _isLoading,
+        );
+      }
+
+      final List<TModel> models = rawData
           .map((row) {
             final jsonData = row['item_json_data'];
             if (jsonData == null) return null;
@@ -277,6 +363,13 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
           })
           .whereType<TModel>()
           .toList();
+
+      return FeedStreamState<TModel>(
+        data: models,
+        error: _error,
+        count: _totalRemoteCount,
+        isLoading: _isLoading,
+      );
     });
   }
 
@@ -286,16 +379,26 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
   }
 
   Future<void> refreshFeed({bool initialize = false}) async {
+    if (_isLoading) {
+      _logger.info('refreshFeed called while already loading, returning.');
+      return;
+    }
     try {
       _logger.info(
         'refreshFeed called. initialize: $initialize, current terms: "$terms", dynamicFiltersSet: ${_dynamicFilterApplicator != null}, orderColumn: $_orderColumn',
       );
+
+      // Set loading state
+      _isLoading = true;
+      _error = null;
 
       // _fetch will use _getEffectiveQueryBuilder() and return TetherClientReturn
       final result = await _fetch(
         rangeStart: 0,
         rangeEnd: _currentSettings.pageSize - 1,
       );
+
+      _logger.info('Fetched ${result.data.length} items');
 
       if (_isDisposed) return;
 
@@ -317,20 +420,18 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
         if (_isDisposed) return;
         await feedManager.setFeedItems(
           feedKey: feedKey,
-          items:
-              items
-                  .asMap()
-                  .entries
-                  .map(
-                    (e) => FeedItemReference(
-                      itemSourceTable:
-                          effectiveQuery
-                              .tableName, // Use effective query's table
-                      itemSourceId: e.value.localId,
-                      displayOrder: e.key,
-                    ),
-                  )
-                  .toList(),
+          items: items
+              .asMap()
+              .entries
+              .map(
+                (e) => FeedItemReference(
+                  itemSourceTable:
+                      effectiveQuery.tableName, // Use effective query's table
+                  itemSourceId: e.value.localId,
+                  displayOrder: e.key,
+                ),
+              )
+              .toList(),
         );
       } else {
         // addItemsToStart might not be the right behavior if filters change.
@@ -338,27 +439,32 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
         // For now, keeping existing logic.
         await feedManager.addItemsToStart(
           feedKey: feedKey,
-          newItemsToAdd:
-              items
-                  .asMap()
-                  .entries
-                  .map(
-                    (e) => FeedItemReference(
-                      itemSourceTable:
-                          effectiveQuery
-                              .tableName, // Use effective query's table
-                      itemSourceId: e.value.localId,
-                      displayOrder: e.key,
-                    ),
-                  )
-                  .toList(),
+          newItemsToAdd: items
+              .asMap()
+              .entries
+              .map(
+                (e) => FeedItemReference(
+                  itemSourceTable:
+                      effectiveQuery.tableName, // Use effective query's table
+                  itemSourceId: e.value.localId,
+                  displayOrder: e.key,
+                ),
+              )
+              .toList(),
         );
       }
       if (_isDisposed) return;
       currentPage = 0;
-    } catch (e, s) {
+
+      // Clear error and loading state
+      _isLoading = false;
+    } catch (e) {
+      _logger.severe(
+        'SearchStreamNotifier: Error in refreshFeed: $e',
+      );
       if (!_isDisposed) {
-        state = AsyncValue.error(e, s);
+        _isLoading = false;
+        _error = e.toString();
       } else {
         _logger.warning(
           "SearchStreamNotifier: Error in refreshFeed but unmounted: $e",
@@ -368,6 +474,10 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
   }
 
   Future<void> fetchMoreItems() async {
+    if (_isLoading) {
+      _logger.info('fetchMoreItems called while already loading, returning.');
+      return;
+    }
     // Check if there are more items to fetch based on the count
     if (!_hasMoreItems) {
       _logger.info(
@@ -378,6 +488,9 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
 
     final nextPage = currentPage + 1;
     try {
+      // Set loading state for fetching more items
+      _isLoading = true;
+
       final rangeStart = nextPage * _currentSettings.pageSize;
       final rangeEnd = ((nextPage + 1) * _currentSettings.pageSize) - 1;
 
@@ -401,19 +514,17 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
         final effectiveQuery = _getEffectiveQueryBuilder(); // To get tableName
         await feedManager.addItemsToEnd(
           feedKey: _currentSettings.feedKey,
-          itemsToAdd:
-              newItems
-                  .map(
-                    (item) => FeedItemReference(
-                      itemSourceTable:
-                          effectiveQuery
-                              .tableName, // Use effective query's table
-                      itemSourceId: item.localId,
-                      // displayOrder for addItemsToEnd is handled by the manager
-                      displayOrder: -1, // Or let manager handle it
-                    ),
-                  )
-                  .toList(),
+          itemsToAdd: newItems
+              .map(
+                (item) => FeedItemReference(
+                  itemSourceTable:
+                      effectiveQuery.tableName, // Use effective query's table
+                  itemSourceId: item.localId,
+                  // displayOrder for addItemsToEnd is handled by the manager
+                  displayOrder: -1, // Or let manager handle it
+                ),
+              )
+              .toList(),
         );
         if (_isDisposed) return;
         currentPage = nextPage;
@@ -422,9 +533,13 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
           'fetchMoreItems: Added ${newItems.length} items. Current page: $currentPage, Total remote count: $_totalRemoteCount',
         );
       }
-    } catch (e, s) {
+
+      // Clear loading state
+      _isLoading = false;
+    } catch (e) {
       if (!_isDisposed) {
-        state = AsyncValue.error(e, s);
+        _isLoading = false;
+        _error = e.toString();
       } else {
         _logger.warning(
           "SearchStreamNotifier: Error in fetchMoreItems but unmounted: $e",
@@ -463,6 +578,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     terms = newTerms;
     currentPage = 0;
     _totalRemoteCount = null; // Reset count when searching
+    _error = null; // Clear any previous errors
     await refreshFeed(initialize: true);
   }
 
@@ -472,8 +588,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
   Future<void> applyDynamicFilters(
     ClientManagerFilterBuilder<TModel> Function(
       ClientManagerFilterBuilder<TModel> baseQueryWithoutDynamicFilters,
-    )
-    filterApplicator,
+    ) filterApplicator,
   ) async {
     _logger.info(
       "Applying dynamic filters for feedKey '${_currentSettings.feedKey}'.",
@@ -481,6 +596,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     _dynamicFilterApplicator = filterApplicator;
     currentPage = 0;
     _totalRemoteCount = null; // Reset count when filters change
+    _error = null; // Clear any previous errors
     // It's usually best to re-initialize the feed when filters change significantly.
     // Also, consider if search terms should be cleared or maintained.
     // For now, maintaining search terms.
@@ -497,6 +613,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
       _dynamicFilterApplicator = null;
       currentPage = 0;
       _totalRemoteCount = null; // Reset count when filters change
+      _error = null; // Clear any previous errors
       // Also consider if search terms should be cleared.
       await refreshFeed(initialize: true);
     } else {
@@ -505,7 +622,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
       );
     }
   }
-  
+
   /// Apply a new ordering to the feed items.
   ///
   /// This will fetch items from the remote source in the specified order
@@ -520,13 +637,14 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     bool nullsFirst = false,
   }) async {
     _logger.info(
-      "Applying ordering for feedKey '${_currentSettings.feedKey}': ${column.columnName} ${ascending ? 'ASC' : 'DESC'}, nullsFirst: $nullsFirst",
+      "Applying ordering for feedKey '${_currentSettings.feedKey}': ${column.dartName} ${ascending ? 'ASC' : 'DESC'}, nullsFirst: $nullsFirst",
     );
     _orderColumn = column;
     _orderAscending = ascending;
     _orderNullsFirst = nullsFirst;
     currentPage = 0;
     _totalRemoteCount = null; // Reset count when ordering changes
+    _error = null; // Clear any previous errors
     await refreshFeed(initialize: true);
   }
 
@@ -540,6 +658,7 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
     _orderNullsFirst = _currentSettings.defaultOrderNullsFirst;
     currentPage = 0;
     _totalRemoteCount = null; // Reset count when clearing ordering
+    _error = null; // Clear any previous errors
     await refreshFeed(initialize: true);
   }
 
@@ -548,9 +667,10 @@ class FeedStreamNotifier<TModel extends TetherModel<TModel>>
 
   /// Getter to expose whether more items are available for UI components
   bool get hasMoreItems => _hasMoreItems;
+
+  /// Getter to expose the current loading state
+  bool get isLoading => _isLoading;
+
+  /// Getter to expose the current error state
+  String? get error => _error;
 }
-
-
-
-
-

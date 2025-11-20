@@ -81,12 +81,12 @@ class OrderTerm {
   String toSupabaseOrderString() {
     final direction = ascending ? 'asc' : 'desc';
     final nulls = nullsFirst ? 'nullsfirst' : 'nullslast';
-    return '${column.fullyQualified}.$direction.$nulls';
+    return '${column.fullyQualified(null)}.$direction.$nulls';
   }
 
   @override
   String toString() {
-    return 'OrderTerm{column: ${column.fullyQualified}, '
+    return 'OrderTerm{column: ${column.fullyQualified(null)}, '
         'ascending: $ascending, nullsFirst: $nullsFirst}';
   }
 
@@ -94,14 +94,14 @@ class OrderTerm {
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     return other is OrderTerm &&
-        other.column.fullyQualified == column.fullyQualified &&
+        other.column.fullyQualified(null) == column.fullyQualified(null) &&
         other.ascending == ascending &&
         other.nullsFirst == nullsFirst;
   }
 
   @override
   int get hashCode =>
-      column.fullyQualified.hashCode ^ ascending.hashCode ^ nullsFirst.hashCode;
+      column.fullyQualified(null).hashCode ^ ascending.hashCode ^ nullsFirst.hashCode;
 }
 
 /// Represents the final built SQL string and its arguments.
@@ -218,18 +218,14 @@ class SqlStatement {
 
     switch (operationType) {
       case SqlOperationType.select:
-        final select = selectColumns ?? '*';
-        final from = fromAlias != null ? '$tableName $fromAlias' : tableName;
-        final order = orderBy != null ? 'ORDER BY $orderBy' : '';
-        final limitSql = limit != null ? 'LIMIT $limit' : '';
-        final offsetSql =
-            offset != null && limit != null
-                ? 'OFFSET $offset'
-                : ''; // Offset requires Limit
+        // Ensure fromAlias is not null for select, or handle it gracefully.
+        // The table name itself can be used if fromAlias is not provided.
+        final fromClause = fromAlias != null ? '$tableName $fromAlias' : tableName;
         sql =
-            'SELECT $select FROM $from $whereClauseSql $order $limitSql $offsetSql'
-                .trim()
-                .replaceAll(RegExp(r'\s+'), ' ');
+            'SELECT $selectColumns FROM $fromClause $whereClauseSql';
+        if (orderBy != null) sql += ' ORDER BY $orderBy';
+        if (limit != null) sql += ' LIMIT $limit';
+        if (offset != null) sql += ' OFFSET $offset';
         arguments.addAll(whereArguments);
         break;
 
@@ -241,7 +237,7 @@ class SqlStatement {
         }
         final columnsSql = insertColumns!.join(', ');
         sql =
-            'INSERT INTO $tableName ($columnsSql) VALUES $insertValuesPlaceholders';
+            'INSERT INTO $tableName ($columnsSql) VALUES $insertValuesPlaceholders RETURNING *';
         arguments.addAll(insertArguments!);
         break;
 
@@ -268,16 +264,16 @@ class SqlStatement {
           throw StateError('Missing components for UPSERT operation.');
         }
         final columnsSql = insertColumns!.join(', ');
-        final conflictClause =
-            upsertUpdateSetClauses != null && upsertUpdateSetClauses!.isNotEmpty
-                ? 'ON CONFLICT($upsertConflictTarget) DO UPDATE SET $upsertUpdateSetClauses'
-                : 'ON CONFLICT($upsertConflictTarget) DO NOTHING';
+        final conflictResolution = upsertUpdateSetClauses != null &&
+                upsertUpdateSetClauses!.isNotEmpty
+            ? 'DO UPDATE SET $upsertUpdateSetClauses'
+            : 'DO NOTHING';
         sql =
-            'INSERT INTO $tableName ($columnsSql) VALUES $insertValuesPlaceholders $conflictClause';
+            'INSERT INTO $tableName ($columnsSql) VALUES $insertValuesPlaceholders ON CONFLICT ($upsertConflictTarget) $conflictResolution';
         arguments.addAll(insertArguments!);
-        // Note: WHERE clause is not typically used in this UPSERT structure.
         break;
     }
+
     return FinalSqlStatement(sql, arguments);
   }
 
@@ -290,10 +286,9 @@ class SqlStatement {
 
 // --- Updated ClientManagerSqlUtils ---
 
-
 /// Utility class for generating SQLite SQL strings from TetherModels and applying transformations.
 class ClientManagerSqlUtils {
-/// Generates a structured INSERT statement for a list of models.
+  /// Generates a structured INSERT statement for a list of models.
   static SqlStatement buildInsertSqlFromModel<TModel extends TetherModel<TModel>>(
     List<TModel> models,
     String tableName,
@@ -339,9 +334,9 @@ class ClientManagerSqlUtils {
     );
   }
 
-  /// Generates a structured INSERT statement for a list of models.
-  static SqlStatement buildInsertSql<TInput extends TetherModelInput<TInput, TModel>, TModel extends TetherModel<TModel>>(
-    List<TInput> models,
+  /// Generates a structured INSERT statement for a list of input models.
+  static SqlStatement buildInsertSql(
+    List<TetherModelInputBase> models,
     String tableName,
   ) {
     if (models.isEmpty) {
@@ -385,9 +380,9 @@ class ClientManagerSqlUtils {
     );
   }
 
-  /// Generates a structured UPDATE statement for a given model, based on its ID.
-  static SqlStatement buildUpdateSql<TInput extends TetherModelInput<TInput, TModel>, TModel extends TetherModel<TModel>>(
-    TetherModelInput<TInput, TModel> model,
+  /// Generates a structured UPDATE statement for a given input model, based on its ID.
+  static SqlStatement buildUpdateSql(
+    TetherModelInputBase model,
     String tableName, {
     String idColumnName = 'id',
   }) {
@@ -420,26 +415,76 @@ class ClientManagerSqlUtils {
     );
   }
 
-  /// Generates a structured UPSERT statement for a list of models.
-  static SqlStatement buildUpsertSql<T>(
-    List<TetherModel<T>> models,
-    String tableName, {
-    String idColumnName = 'id',
+  /// Generates a structured UPSERT statement for a list of input models.
+  static SqlStatement buildUpsertSql(
+    List<TetherModelInputBase> models,
+    String originalSupabaseTableName, {
+    required Map<String, SupabaseTableInfo> tableSchemas,
+    bool defaultToNull = true,
   }) {
     if (models.isEmpty) {
       throw ArgumentError(
         'Cannot build UPSERT statement from empty model list.',
       );
     }
-    final firstModelMap = models.first.toSqlite();
+
+    final schemaKey = originalSupabaseTableName.contains('.')
+        ? originalSupabaseTableName
+        : 'public.$originalSupabaseTableName';
+
+    final tableInfo = tableSchemas[schemaKey];
+    if (tableInfo == null) {
+      throw Exception(
+        "Schema information for table '$schemaKey' not found. Cannot build upsert SQL.",
+      );
+    }
+
+    final localTableName = tableInfo.localName;
+    final firstModelMap = models.first.toSqliteMap(defaultToNull: defaultToNull);
     if (firstModelMap.isEmpty) {
       throw ArgumentError('Cannot build UPSERT: First model has no data.');
     }
-    if (!firstModelMap.containsKey(idColumnName)) {
-      throw ArgumentError(
-        'Cannot build UPSERT: ID column "$idColumnName" not found.',
-      );
+
+    // --- START of new logic to determine conflict target ---
+    String conflictTarget;
+
+    // 1. Look for multi-column unique constraints first.
+    final multiColumnUniqueConstraints = tableInfo.uniqueConstraints
+        .where((constraint) => constraint.columns.length > 1)
+        .toList();
+
+    String? selectedConstraint;
+    if (multiColumnUniqueConstraints.isNotEmpty) {
+      // Find the first multi-column constraint where all columns are present in the model data
+      for (final constraint in multiColumnUniqueConstraints) {
+        // The constraint columns are Supabase names, we need to check against local names in the model map
+        final constraintLocalNames = constraint.columns
+            .map((supaName) =>
+                tableInfo.columns.firstWhere((c) => c.name == supaName).localName)
+            .toList();
+        if (constraintLocalNames
+            .every((localName) => firstModelMap.containsKey(localName))) {
+          selectedConstraint = constraintLocalNames.join(', ');
+          break;
+        }
+      }
     }
+
+    // 2. If a suitable multi-column constraint is found, use it. Otherwise, fall back to the primary key.
+    if (selectedConstraint != null) {
+      conflictTarget = selectedConstraint;
+    } else {
+      // Fallback to primary key (original behavior)
+      final pkInfos = tableInfo.primaryKeys;
+      if (pkInfos.isEmpty) {
+        throw ArgumentError(
+          "Cannot build UPSERT: No primary keys defined for table '$schemaKey' and no suitable multi-column unique constraint found. Conflict target is required.",
+        );
+      }
+      final pkLocalNames = pkInfos.map((pk) => pk.localName).toList();
+      conflictTarget = pkLocalNames.join(', ');
+    }
+    // --- END of new logic ---
 
     final columns = firstModelMap.keys.toList();
     final columnCount = columns.length;
@@ -451,10 +496,118 @@ class ClientManagerSqlUtils {
     ).join(', ');
     final allArguments = <Object?>[];
 
-    final updateColumns = columns.where((key) => key != idColumnName).toList();
-    final updateSetClauses = updateColumns
-        .map((key) => '$key = excluded.$key')
-        .join(', ');
+    final updateColumns =
+        columns.where((key) => !conflictTarget.split(', ').contains(key)).toList();
+    final updateSetClauses =
+        updateColumns.map((key) => '$key = excluded.$key').join(', ');
+
+    for (final model in models) {
+      final map = model.toSqliteMap(defaultToNull: defaultToNull);
+      if (map.length != columnCount ||
+          map.keys.join(',') != columns.join(',')) {
+        throw ArgumentError(
+          'Inconsistent model structure detected for bulk UPSERT.',
+        );
+      }
+      allArguments.addAll(map.values);
+    }
+
+    return SqlStatement(
+      operationType: SqlOperationType.upsert,
+      tableName: localTableName,
+      insertColumns: columns,
+      insertValuesPlaceholders: allPlaceholders,
+      insertArguments: allArguments,
+      upsertConflictTarget: conflictTarget,
+      upsertUpdateSetClauses:
+          updateSetClauses.isNotEmpty ? updateSetClauses : null,
+    );
+  }
+
+  /// Generates a structured UPSERT statement for a list of full models.
+  static SqlStatement buildUpsertSqlForModels(
+    List<TetherModel<dynamic>> models,
+    String originalSupabaseTableName, {
+    required Map<String, SupabaseTableInfo> tableSchemas,
+  }) {
+    if (models.isEmpty) {
+      throw ArgumentError(
+        'Cannot build UPSERT statement from empty model list.',
+      );
+    }
+
+    final schemaKey = originalSupabaseTableName.contains('.')
+        ? originalSupabaseTableName
+        : 'public.$originalSupabaseTableName';
+
+    final tableInfo = tableSchemas[schemaKey];
+    if (tableInfo == null) {
+      throw Exception(
+        "Schema information for table '$schemaKey' not found. Cannot build upsert SQL.",
+      );
+    }
+
+    final localTableName = tableInfo.localName;
+    final firstModelMap = models.first.toSqlite();
+    if (firstModelMap.isEmpty) {
+      throw ArgumentError('Cannot build UPSERT: First model has no data.');
+    }
+
+    // --- START of new logic to determine conflict target ---
+    String conflictTarget;
+
+    // 1. Look for multi-column unique constraints first.
+    final multiColumnUniqueConstraints = tableInfo.uniqueConstraints
+        .where((constraint) => constraint.columns.length > 1)
+        .toList();
+
+    String? selectedConstraint;
+    if (multiColumnUniqueConstraints.isNotEmpty) {
+      // Find the first multi-column constraint where all columns are present in the model data
+      for (final constraint in multiColumnUniqueConstraints) {
+        // The constraint columns are Supabase names, we need to check against local names in the model map
+        final constraintLocalNames = constraint.columns
+            .map((supaName) =>
+                tableInfo.columns.firstWhere((c) => c.name == supaName).localName)
+            .toList();
+        if (constraintLocalNames
+            .every((localName) => firstModelMap.containsKey(localName))) {
+          selectedConstraint = constraintLocalNames.join(', ');
+          break;
+        }
+      }
+    }
+
+    // 2. If a suitable multi-column constraint is found, use it. Otherwise, fall back to the primary key.
+    if (selectedConstraint != null) {
+      conflictTarget = selectedConstraint;
+    } else {
+      // Fallback to primary key (original behavior)
+      final pkInfos = tableInfo.primaryKeys;
+      if (pkInfos.isEmpty) {
+        throw ArgumentError(
+          "Cannot build UPSERT: No primary keys defined for table '$schemaKey' and no suitable multi-column unique constraint found. Conflict target is required.",
+        );
+      }
+      final pkLocalNames = pkInfos.map((pk) => pk.localName).toList();
+      conflictTarget = pkLocalNames.join(', ');
+    }
+    // --- END of new logic ---
+
+    final columns = firstModelMap.keys.toList();
+    final columnCount = columns.length;
+    final valuePlaceholderGroup =
+        '(${List.filled(columnCount, '?').join(', ')})';
+    final allPlaceholders = List.filled(
+      models.length,
+      valuePlaceholderGroup,
+    ).join(', ');
+    final allArguments = <Object?>[];
+
+    final updateColumns =
+        columns.where((key) => !conflictTarget.split(', ').contains(key)).toList();
+    final updateSetClauses =
+        updateColumns.map((key) => '$key = excluded.$key').join(', ');
 
     for (final model in models) {
       final map = model.toSqlite();
@@ -464,23 +617,18 @@ class ClientManagerSqlUtils {
           'Inconsistent model structure detected for bulk UPSERT.',
         );
       }
-      if (!map.containsKey(idColumnName)) {
-        throw ArgumentError(
-          'Inconsistent model structure: ID column "$idColumnName" missing.',
-        );
-      }
       allArguments.addAll(map.values);
     }
 
     return SqlStatement(
       operationType: SqlOperationType.upsert,
-      tableName: tableName,
+      tableName: localTableName,
       insertColumns: columns,
       insertValuesPlaceholders: allPlaceholders,
       insertArguments: allArguments,
-      upsertConflictTarget: idColumnName,
+      upsertConflictTarget: conflictTarget,
       upsertUpdateSetClauses:
-          updateSetClauses, // Will be ignored by build() if empty
+          updateSetClauses.isNotEmpty ? updateSetClauses : null,
     );
   }
 
@@ -682,12 +830,10 @@ class ClientManagerSqlUtils {
   /// Adds LIMIT and OFFSET clauses (for range) to a SqlStatement. Replaces existing.
   static SqlStatement applyRange(SqlStatement statement, int from, int to) {
     if (statement.operationType != SqlOperationType.select) {
-      print("Warning: Applying range (LIMIT/OFFSET) to non-SELECT statement.");
+      print("Warning: Applying range to non-SELECT statement.");
     }
     if (from < 0 || to < from) {
-      throw ArgumentError(
-        'Invalid range: "from" must be non-negative and "to" must be >= "from".',
-      );
+      throw ArgumentError('Invalid range: from=$from, to=$to');
     }
     final count = to - from + 1;
     return statement.copyWith(limit: count, offset: from);
@@ -701,22 +847,18 @@ class ClientManagerSqlUtils {
   ]) {
     // Cannot easily apply WHERE to UPSERT in this structure
     if (statement.operationType == SqlOperationType.upsert) {
-      print(
-        "Warning: Applying WHERE clause to UPSERT statement is not standard.",
-      );
-      return statement;
+      throw UnsupportedError('Cannot apply WHERE clause to UPSERT statement.');
     }
     // Cannot apply WHERE to INSERT
     if (statement.operationType == SqlOperationType.insert) {
-      print("Warning: Applying WHERE clause to INSERT statement is invalid.");
-      return statement;
+      throw UnsupportedError('Cannot apply WHERE clause to INSERT statement.');
     }
 
     final newClauses = List<String>.from(statement.whereClauses)..add(clause);
     // Correctly handle adding arguments using the cascade operator and addAll
     final newArgs = List<Object?>.from(statement.whereArguments);
     if (arguments != null) {
-      newArgs.addAll(arguments); // Use standard addAll method
+      newArgs.addAll(arguments);
     }
 
     return statement.copyWith(
@@ -727,9 +869,7 @@ class ClientManagerSqlUtils {
 
   static SqlStatement applySingle(SqlStatement statement) {
     if (statement.operationType != SqlOperationType.select) {
-      throw ArgumentError(
-        "applySingle can only be used with SELECT statements.",
-      );
+      throw UnsupportedError('Single can only be applied to SELECT statements.');
     }
 
     return statement.copyWith(limit: 1);

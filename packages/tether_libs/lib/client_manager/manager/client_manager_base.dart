@@ -1,11 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 
+import 'package:flutter/foundation.dart';
+import 'package:rxdart/rxdart.dart';
+import 'package:sqlite_async/sqlite3_common.dart';
 import 'package:sqlite_async/sqlite_async.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:tether_libs/models/row_utils.dart';
 import 'package:tether_libs/models/supabase_select_builder_base.dart';
 import 'package:tether_libs/models/tether_model.dart';
 import 'package:tether_libs/models/table_info.dart';
+import 'package:tether_libs/models/tether_model_input.dart';
 import 'client_manager_models.dart';
 
 class TetherClientReturn<TModel extends TetherModel<TModel>> {
@@ -33,6 +39,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
   final SqliteDatabase localDb;
   final SupabaseClient client;
   final PostgrestBuilder supabase;
+  final SupabaseQueryBuilder baseSupabase;
   final SqlOperationType? type;
   final SelectBuilderBase? selector;
   final bool syncWithSupabase;
@@ -46,12 +53,14 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
   bool isLocalOnly;
   final FromJsonFactory<TModel> fromJsonFactory;
   final FromSqliteFactory<TModel> fromSqliteFactory;
+  final TetherModelInputBase? updatePayload;
 
   ClientManagerBase({
     required this.tableName,
     required this.localTableName,
     required this.localDb,
     required this.supabase,
+    required this.baseSupabase,
     required this.client,
     required this.tableSchemas,
     required this.fromJsonFactory,
@@ -64,6 +73,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
     this.isRemoteOnly = false,
     this.isLocalOnly = false,
     this.selectorStatement,
+    this.updatePayload,
   });
 
   /// Generates a list of UPSERT SQL statements for nested data from a Supabase response.
@@ -72,6 +82,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
     List<Map<String, dynamic>> supabaseResponse,
   ) async {
     if (supabaseResponse.isEmpty) {
+      debugPrint('Supabase response is empty, skipping upsert.');
       return;
     }
 
@@ -89,7 +100,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
       final Set<String> processedModelKeys = {};
 
       // 2. Recursive helper to traverse the deserialized object graph.
-      void _collectModelsRecursively(
+      void collectModelsRecursively(
         TetherModel<dynamic> currentModel,
         String currentModelOriginalTableName,
       ) {
@@ -123,7 +134,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
             tableSchemas['public.$currentModelOriginalTableName'];
 
         if (tableInfo == null) {
-          log(
+          debugPrint(
             "Warning: Table info not found for 'public.$currentModelOriginalTableName' in _collectModelsRecursively. Skipping relations for this model.",
           );
           return;
@@ -145,7 +156,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
           final dynamic relatedData = currentModel.data[fieldName];
 
           if (relatedData is TetherModel) {
-            _collectModelsRecursively(relatedData, fk.originalForeignTableName);
+            collectModelsRecursively(relatedData, fk.originalForeignTableName);
           }
         }
         log(
@@ -157,34 +168,31 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
         // Assuming `tableInfo.reverseRelations` exists and provides necessary info.
         // `ModelReverseRelationInfo` would be a class holding `fieldNameInThisModel` and `referencingTableOriginalName`.
         if (tableInfo.reverseRelations.isNotEmpty) {
-          for (final revRelInfo in tableInfo.reverseRelations) {
-            final fieldName = revRelInfo.fieldNameInThisModel;
-            log(
-              "Looking for reverse relation field: '$fieldName' for table ${revRelInfo.referencingTableOriginalName}",
-            );
-            final dynamic relatedDataList = currentModel.data[fieldName];
+          for (final reverseRel in tableInfo.reverseRelations) {
+            // The field in the current model that holds the list of related models (e.g., 'books' in AuthorModel)
+            //
+            // CORRECTED: Access the nested data directly from the model's `data` map,
+            // which was populated by the fromJsonFactory. Do not re-serialize to JSON.
+            final dynamic relatedData =
+                currentModel.data[reverseRel.fieldNameInThisModel];
 
-            if (relatedDataList == null) {
-              log(
-                "Reverse relation field '$fieldName' is NULL in currentModel.data for ${currentModelOriginalTableName}",
-              );
-            } else if (relatedDataList is List) {
-              log(
-                "Found reverse relation list for '$fieldName'. Count: ${relatedDataList.length}",
-              );
-              for (final item in relatedDataList) {
-                if (item is TetherModel) {
-                  // The table name for items in this list is the table that *has* the FK
-                  // pointing to the current model's table.
-                  _collectModelsRecursively(
-                    item,
-                    revRelInfo.referencingTableOriginalName,
+            if (relatedData is List) {
+              // The list items are already deserialized into TetherModel instances
+              // by the fromJsonFactory.
+              for (final relatedItem in relatedData) {
+                if (relatedItem is TetherModel) {
+                  // Recursively collect models from the list
+                  collectModelsRecursively(
+                    relatedItem,
+                    reverseRel.referencingTableOriginalName,
                   );
                 }
               }
-            } else {
-              log(
-                "Reverse relation field '$fieldName' is NOT A LIST. Type: ${relatedDataList.runtimeType}",
+            } else if (relatedData is TetherModel) {
+              // Handle one-to-one reverse relations if they exist
+              collectModelsRecursively(
+                relatedData,
+                reverseRel.referencingTableOriginalName,
               );
             }
           }
@@ -194,35 +202,52 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
       // 3. Start the recursive collection process for each root model.
       for (final model in rootModels) {
         // `this.tableName` is the simple name of the root table (e.g., "books")
-        _collectModelsRecursively(model, this.tableName);
+        collectModelsRecursively(model, tableName);
       }
 
       log('Models to Upsert: $modelsByTable');
 
-      // 4. Build UPSERT SQL statements for each table that has collected models.
-      final List<SqlStatement> upsertStatements = [];
-      modelsByTable.forEach((originalTableName, modelsList) {
-        if (modelsList.isNotEmpty) {
-          // ClientManagerSqlUtils.buildUpsertSql expects the simple original table name.
-          upsertStatements.add(
-            ClientManagerSqlUtils.buildUpsertSql(modelsList, originalTableName),
-          );
-        }
-      });
-
-      // 5. Execute all UPSERT statements in a single transaction.
-      if (upsertStatements.isNotEmpty) {
+      // 4. Build and execute UPSERT statements in batches for each table.
+      if (modelsByTable.isNotEmpty) {
         await localDb.writeTransaction((tx) async {
-          for (final statement in upsertStatements) {
-            final finalSql =
-                statement.build(); // Get the FinalSqlStatement object
-            // Pass both the SQL string and the arguments to tx.execute()
-            await tx.execute(finalSql.sql, finalSql.arguments);
+          for (final entry in modelsByTable.entries) {
+            final originalTableName = entry.key;
+            final modelsList = entry.value;
+            if (modelsList.isEmpty) continue;
+
+            // Determine a safe batch size. The max variables in SQLite is 999 by default.
+            // Batch size = 999 / number of columns. Let's be conservative.
+            final firstModel = modelsList.first;
+            final columnCount = firstModel.toSqlite().keys.length;
+            if (columnCount == 0) continue;
+
+            final batchSize = (900 / columnCount).floor().clamp(1, 500);
+
+            for (var i = 0; i < modelsList.length; i += batchSize) {
+              final end = (i + batchSize < modelsList.length)
+                  ? i + batchSize
+                  : modelsList.length;
+              final batch = modelsList.sublist(i, end);
+
+              if (batch.isNotEmpty) {
+                final statement = ClientManagerSqlUtils.buildUpsertSqlForModels(
+                  batch,
+                  originalTableName,
+                  tableSchemas: tableSchemas,
+                );
+                final finalSql = statement.build();
+                await tx.execute(finalSql.sql, finalSql.arguments);
+              }
+            }
           }
         });
       }
+
+      // FIX: Await a trivial command to ensure the write transaction is fully committed.
+      // This forces the database isolate to process pending writes before this method returns.
+      await localDb.get('SELECT 1');
     } catch (e, s) {
-      log('Error in upsertSupabaseData: $e $s');
+      debugPrint('Error in upsertSupabaseData: $e $s');
       // Depending on desired behavior, you might rethrow or handle specific exceptions.
     }
   }
@@ -230,71 +255,78 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
   /// Stream implementation
   @override
   Stream<TetherClientReturn<TModel>> asStream() {
-    try {
-      if (type != SqlOperationType.select) {
-        throw UnsupportedError(
-          'Streaming is only supported for SELECT operations.',
-        );
-      }
-
-      if (localQuery == null) {
-        throw ArgumentError('localQuery must be provided for streaming.');
-      }
-
-      // Stream data from the local database
-      final localStream = localDb.watch(localQuery!.build().sql).map((rows) {
-        return rows.map((row) => fromSqliteFactory(row)).toList();
-      });
-
-      final controller = StreamController<TetherClientReturn<TModel>>();
-      int? currentRemoteCount;
-
-      // Fetch remote data in the background and update the local database
-      (supabase as PostgrestTransformBuilder)
-          .count(CountOption.exact)
-          .then((remoteData) async {
-            currentRemoteCount = remoteData.count;
-            await upsertSupabaseData(remoteData.data);
-          })
-          .catchError((error) {
-            // Log the error but do not interrupt the local stream
-            throw Exception('Error fetching remote data: $error');
-          });
-
-      final localSubscription = localStream.listen(
-        (listData) {
-          // When localDataStream emits, package it with the currentRemoteCount
-          // If supabase fetch hasn't completed, currentRemoteCount will be null
-          if (!controller.isClosed) {
-            controller.add(
-              TetherClientReturn<TModel>(
-                data: listData,
-                count: currentRemoteCount,
-              ),
-            );
-          }
-        },
-        onError: (error, stackTrace) {
-          if (!controller.isClosed) {
-            controller.addError(error, stackTrace);
-          }
-        },
-        onDone: () {
-          if (!controller.isClosed) {
-            controller.close();
-          }
-        },
-      );
-      controller.onCancel = () {
-        localSubscription.cancel();
-      };
-
-      return controller.stream;
-    } catch (e) {
-      return Stream.value(
-        TetherClientReturn<TModel>(data: [], error: 'Error in asStream: $e'),
+    if (type != SqlOperationType.select) {
+      return Stream.error(
+        UnsupportedError('Streaming is only supported for SELECT operations.'),
       );
     }
+    if (localQuery == null) {
+      return Stream.error(
+        ArgumentError('localQuery must be provided for streaming.'),
+      );
+    }
+
+    // 1. Build the local query.
+    final aliasedQuery = localQuery!.copyWith(
+      selectColumns: '${localQuery!.selectColumns} AS jsobjects',
+    );
+    final FinalSqlStatement builtQuery = aliasedQuery.build();
+
+    // 2. Create a stream that watches the local database.
+    // This stream will emit whenever the underlying data changes.
+    final localDataStream = localDb
+        .watch(builtQuery.sql, parameters: builtQuery.arguments)
+        .map((rows) {
+      final models = rows
+          .where((row) => row['jsobjects'] != null)
+          .map((row) => fromSqliteFactory(
+              createRowFromMap(jsonDecode(row['jsobjects'] as String))))
+          .toList();
+      return TetherClientReturn<TModel>(data: models);
+    });
+
+    // 3. Define the remote sync operation as a Future.
+    // This will fetch the remote count and upsert the data.
+    Future<int?> syncRemoteData() async {
+      if (isLocalOnly || !syncWithSupabase) return null;
+      try {
+        final remoteDataResponse =
+            await _resetPreferForCount().count(CountOption.exact);
+        await upsertSupabaseData(remoteDataResponse.data);
+        return remoteDataResponse.count;
+      } catch (e, s) {
+        // Propagate the error through the stream.
+        debugPrint('Error fetching remote data for stream: $e $s');
+        rethrow;
+      }
+    }
+
+    // 4. Use RxDart's `CombineLatestStream` to merge the local data stream
+    //    with the result of the remote sync operation.
+    return CombineLatestStream.combine2(
+      localDataStream,
+      // Convert the Future into a stream that emits once.
+      // `startWith(null)` ensures the stream emits immediately with no count,
+      // allowing the local data to be shown first.
+      Stream.fromFuture(syncRemoteData()).startWith(null),
+      (localData, remoteCount) {
+        // The first emission will have remoteCount = null.
+        // Subsequent emissions from localDataStream will be combined with the
+        // now-completed remoteCount.
+        // If the remote sync completes, it will trigger a new emission here.
+        return TetherClientReturn(
+          data: localData.data,
+          count: remoteCount ?? localData.count, // Use remote count when available
+          error: localData.error,
+        );
+      },
+    ).handleError((error, stackTrace) {
+      // Catch errors from either the local stream or the remote fetch.
+      debugPrint('Error in asStream pipeline: $error');
+      // It's better to let the UI layer handle the error state.
+      // We rethrow it so providers like StreamProvider can catch it.
+      throw error;
+    });
   }
 
   /// Handle errors
@@ -303,7 +335,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
     Function onError, {
     bool Function(Object error)? test,
   }) {
-    return this.then(
+    return then(
       (value) => TetherClientReturn<TModel>(data: [], error: null),
       onError: (error) {
         if (test == null || test(error)) {
@@ -352,8 +384,7 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
     Duration timeLimit, {
     FutureOr<TetherClientReturn<TModel>> Function()? onTimeout,
   }) {
-    return this
-        .then((value) {
+    return then((value) {
           return value;
         })
         .timeout(timeLimit, onTimeout: onTimeout);
@@ -364,7 +395,13 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
   Future<TetherClientReturn<TModel>> whenComplete(
     FutureOr<void> Function() action,
   ) {
-    return this.then((value) => value).whenComplete(action);
+    return then((value) => value).whenComplete(action);
+  }
+
+  // Ensures we don’t accumulate duplicate "count=..." in Prefer.
+  PostgrestTransformBuilder<dynamic> _resetPreferForCount() {
+    // setHeader returns a new builder copy with the header overwritten
+    return (supabase as PostgrestTransformBuilder).setHeader('Prefer', '');
   }
 
   Future<TetherClientReturn<TModel>> _executeSelect() async {
@@ -372,10 +409,17 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
     try {
       if (isLocalOnly) {
         // Fetch data from the local SQLite database
-        final localData = await localDb.getAll(localQuery!.build().sql);
+        final aliasedQuery = localQuery!.copyWith(
+          selectColumns: '${localQuery!.selectColumns} AS jsobjects',
+        );
+        final finalSql = aliasedQuery.build();
+        final localRows = await localDb.getAll(finalSql.sql, finalSql.arguments);
 
-        // Convert local data to TetherModel instances
-        tetherModels = localData.map((row) => fromSqliteFactory(row)).toList();
+        // Filter out rows where 'jsobjects' is null before mapping.
+        tetherModels = localRows
+            .where((row) => row['jsobjects'] != null)
+            .map((row) => fromSqliteFactory(createRowFromMap(jsonDecode(row['jsobjects'] as String))))
+            .toList();
 
         return TetherClientReturn<TModel>(
           data: tetherModels,
@@ -384,21 +428,32 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
         );
       }
 
-      final PostgrestResponse<dynamic> remoteData = await (supabase
-              as PostgrestTransformBuilder)
-          .count(CountOption.exact);
+      // The PostgrestTransformBuilder is cast from the base PostgrestBuilder
+      final transformBuilder = supabase as PostgrestTransformBuilder;
 
-      tetherModels =
-          remoteData.data.map((row) => fromJsonFactory(row)).toList();
-      await upsertSupabaseData(remoteData.data);
+      // Make a CLEAN builder for this call to avoid duplicated Prefer
+      final executionBuilder = transformBuilder.setHeader('Prefer', '');
+
+      // Use count on the clean builder (returns data + count)
+      final PostgrestResponse<dynamic> remoteDataResponse =
+          await executionBuilder.count(CountOption.exact);
+
+      final List<dynamic> remoteData = remoteDataResponse.data as List<dynamic>;
+      tetherModels = remoteData
+          .map((row) => fromJsonFactory(row as Map<String, dynamic>))
+          .toList();
+
+      if (syncWithSupabase) {
+        await upsertSupabaseData(remoteData.cast<Map<String, dynamic>>());
+      }
 
       return TetherClientReturn<TModel>(
         data: tetherModels,
-        count: remoteData.count,
+        count: remoteDataResponse.count,
         error: null,
       );
-    } catch (e) {
-      return TetherClientReturn<TModel>(data: [], error: e.toString());
+    } catch (e, s) {
+      return TetherClientReturn<TModel>(data: [], error: '$e $s');
     }
   }
 
@@ -407,35 +462,23 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
       throw ArgumentError('localQuery must be provided for INSERT operations.');
     }
 
+    // 1. Perform the optimistic INSERT and get the new row's ID.
+    // This is NOT in a transaction, so it commits immediately and notifies the UI.
+    final FinalSqlStatement optimisticSql = localQuery!.build();
+    final optimisticResult =
+        await localDb.execute(optimisticSql.sql, optimisticSql.arguments);
+    final dynamic lastInsertedId = optimisticResult.first['id'];
+
     List<TModel> remoteModels = [];
-
     try {
-      // Start a transaction with a savepoint
-      await localDb.writeTransaction((tx) async {
-        await tx.execute('SAVEPOINT optimistic_insert;');
+      // 2. Attempt the remote operation.
+      final remoteData = await (supabase
+              as PostgrestTransformBuilder).select();
+      remoteModels = remoteData.map((row) => fromJsonFactory(row)).toList();
 
-        final FinalSqlStatement finalSql = localQuery!.build();
-
-        // Optimistically insert into the local database
-        await tx.execute(finalSql.sql, finalSql.arguments);
-
-        try {
-          // Execute the Supabase query
-          final remoteData =
-              await (supabase as PostgrestTransformBuilder).select();
-          remoteModels = remoteData.map((row) => fromJsonFactory(row)).toList();
-
-          // Update the local database with the remote data
-          await upsertSupabaseData(remoteData);
-        } catch (error) {
-          // Roll back to the savepoint if the remote action fails
-          await tx.execute('ROLLBACK TO optimistic_insert;');
-          rethrow;
-        }
-
-        // Release the savepoint if everything succeeds
-        await tx.execute('RELEASE SAVEPOINT optimistic_insert;');
-      });
+      // 3. Reconcile local data with the server's response. This will update
+      //    the optimistic record with the real data and notify the UI again.
+      await upsertSupabaseData(remoteData.cast<Map<String, dynamic>>());
 
       return TetherClientReturn<TModel>(
         data: remoteModels,
@@ -443,83 +486,102 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
         error: null,
       );
     } catch (error) {
-      rethrow;
+      // 4. If remote fails, manually roll back the optimistic insert.
+      debugPrint('Rolling back optimistic insert (local id: $lastInsertedId) due to error: $error.');
+      final rollbackSql = ClientManagerSqlUtils.buildDeleteSql(
+        localTableName,
+        lastInsertedId,
+        idColumnName: 'id', // Assuming the local PK column is 'id'
+      );
+      await localDb.execute(rollbackSql.build().sql, rollbackSql.build().arguments);
+      rethrow; // Rethrow the original error.
     }
   }
 
   Future<TetherClientReturn<TModel>> _executeUpdate() async {
-    if (localQuery == null) {
-      throw ArgumentError('localQuery must be provided for INSERT operations.');
+    if (localQuery == null || localQuery!.whereArguments.isEmpty) {
+      throw ArgumentError(
+          'localQuery with whereArguments must be provided for UPDATE.');
     }
 
+    // 1. Identify the record and fetch its current state for rollback.
+    // We assume the ID is the first argument in the WHERE clause.
+    final id = localQuery!.whereArguments.first;
+    final originalRows = await localDb
+        .getAll('SELECT * FROM $localTableName WHERE id = ?', [id]);
+    if (originalRows.isEmpty) {
+      throw Exception('Item with id $id not found for optimistic update.');
+    }
+    final originalRow = originalRows.first;
+
+    // 2. Perform the optimistic UPDATE. This commits immediately and notifies the UI.
+    final FinalSqlStatement optimisticSql = localQuery!.build();
+    await localDb.execute(optimisticSql.sql, optimisticSql.arguments);
+
     TModel? remoteModel;
-
     try {
-      // Start a transaction with a savepoint
-      await localDb.writeTransaction((tx) async {
-        await tx.execute('SAVEPOINT optimistic_insert;');
-
-        final FinalSqlStatement finalSql = localQuery!.build();
-
-        // Optimistically insert into the local database
-        await tx.execute(finalSql.sql, finalSql.arguments);
-
-        try {
-          // Execute the Supabase query
-          final remoteData =
-              await (supabase as PostgrestTransformBuilder).select();
-          remoteModel = fromJsonFactory(remoteData.first);
-
-          // Update the local database with the remote data
-          await upsertSupabaseData(remoteData);
-        } catch (error) {
-          // Roll back to the savepoint if the remote action fails
-          await tx.execute('ROLLBACK TO optimistic_insert;');
-          rethrow;
-        }
-
-        // Release the savepoint if everything succeeds
-        await tx.execute('RELEASE SAVEPOINT optimistic_insert;');
-      });
-
+      // 3. Attempt the remote operation.
+      final remoteData = await (supabase
+              as PostgrestTransformBuilder).select();
+      if (remoteData.isNotEmpty) {
+        remoteModel = fromJsonFactory(remoteData.first);
+        await upsertSupabaseData(remoteData.cast<Map<String, dynamic>>());
+      }
       return TetherClientReturn<TModel>(
-        data: [remoteModel!],
-        count: 1,
-        error: null,
+        data: remoteModel != null ? [remoteModel] : [],
+        count: remoteModel != null ? 1 : 0,
       );
     } catch (error) {
+      // 4. If remote fails, roll back by deleting the modified row and re-inserting the original.
+      debugPrint('Rolling back optimistic update for id $id due to error: $error.');
+      await localDb.writeTransaction((tx) async {
+        await tx.execute('DELETE FROM $localTableName WHERE id = ?', [id]);
+        final columns = originalRow.keys.join(', ');
+        final placeholders = List.filled(originalRow.keys.length, '?').join(', ');
+        await tx.execute(
+          'INSERT INTO $localTableName ($columns) VALUES ($placeholders)',
+          originalRow.values.toList(),
+        );
+      });
       rethrow;
     }
   }
 
   Future<void> _executeDelete() async {
-    if (localQuery == null) {
-      throw ArgumentError('localQuery must be provided for DELETE operations.');
+
+    late Row originalRow;
+    try {
+    if (localQuery == null || localQuery!.whereArguments.isEmpty) {
+      throw ArgumentError(
+          'localQuery with whereArguments must be provided for DELETE.');
     }
 
-    try {
-      // Start a transaction with a savepoint
-      await localDb.writeTransaction((tx) async {
-        await tx.execute('SAVEPOINT optimistic_delete;');
+    // 1. Identify the record and fetch its current state for rollback.
+    final id = localQuery!.whereArguments.first;
+    final originalRows = await localDb
+        .getAll('SELECT * FROM $localTableName WHERE id = ?', [id]);
+     if (originalRows.isEmpty) {
+      // The item is already gone, so we can consider the operation a success.
+      return;
+    }
+    originalRow = originalRows.first;
 
-        final FinalSqlStatement finalSql = localQuery!.build();
+    // 2. Perform the optimistic DELETE. This commits immediately and notifies the UI.
+    final FinalSqlStatement optimisticSql = localQuery!.build();
+    await localDb.execute(optimisticSql.sql, optimisticSql.arguments);
 
-        // Optimistically delete from the local database
-        await tx.execute(finalSql.sql, finalSql.arguments);
-
-        try {
-          // Execute the Supabase query
-          await supabase;
-        } catch (error) {
-          // Roll back to the savepoint if the remote action fails
-          await tx.execute('ROLLBACK TO optimistic_delete;');
-          rethrow;
-        }
-
-        // Release the savepoint if everything succeeds
-        await tx.execute('RELEASE SAVEPOINT optimistic_delete;');
-      });
+    
+      // 3. Attempt the remote operation.
+      await supabase;
     } catch (error) {
+      // 4. If remote fails, roll back by re-inserting the original row.
+      log('Rolling back optimistic delete due to error: $error.');
+      final columns = originalRow.keys.join(', ');
+      final placeholders = List.filled(originalRow.keys.length, '?').join(', ');
+      await localDb.execute(
+        'INSERT INTO $localTableName ($columns) VALUES ($placeholders)',
+        originalRow.values.toList(),
+      );
       rethrow;
     }
   }
@@ -529,42 +591,28 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
       throw ArgumentError('localQuery must be provided for UPSERT operations.');
     }
 
-    TModel? remoteModel;
+    // For upsert, optimistic UI is handled by simply running the command.
+    // If it fails remotely, we assume the local state is still valid until the next sync.
+    // A more robust rollback would be complex, involving checking if the row existed before.
+    final FinalSqlStatement optimisticSql = localQuery!.build();
+    await localDb.execute(optimisticSql.sql, optimisticSql.arguments);
 
     try {
-      // Start a transaction with a savepoint
-      await localDb.writeTransaction((tx) async {
-        await tx.execute('SAVEPOINT optimistic_upsert;');
+      final remoteData = await (supabase as PostgrestTransformBuilder).select();
+      final remoteModels = remoteData.map((row) => fromJsonFactory(row)).toList();
 
-        final FinalSqlStatement finalSql = localQuery!.build();
-
-        // Optimistically upsert into the local database
-        await tx.execute(finalSql.sql, finalSql.arguments);
-
-        try {
-          // Execute the Supabase query
-          final remoteData =
-              await (supabase as PostgrestTransformBuilder).select();
-          remoteModel = fromJsonFactory(remoteData.first);
-
-          // Update the local database with the remote data
-          await upsertSupabaseData(remoteData);
-        } catch (error) {
-          // Roll back to the savepoint if the remote action fails
-          await tx.execute('ROLLBACK TO optimistic_upsert;');
-          rethrow;
-        }
-
-        // Release the savepoint if everything succeeds
-        await tx.execute('RELEASE SAVEPOINT optimistic_upsert;');
-      });
+      // Re-sync with the server's response to get any server-generated values (e.g., updated_at).
+      await upsertSupabaseData(remoteData.cast<Map<String, dynamic>>());
 
       return TetherClientReturn<TModel>(
-        data: [remoteModel!],
-        count: 1,
-        error: null,
+        data: remoteModels,
+        count: remoteModels.length,
       );
-    } catch (error) {
+    } catch (e) {
+      // For upsert, we generally don't roll back the optimistic write,
+      // as the state might still be more correct than what was there before.
+      // The next successful sync will resolve any inconsistencies.
+      debugPrint('Remote upsert failed, but optimistic local upsert was kept. Error: $e');
       rethrow;
     }
   }
@@ -592,11 +640,10 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
         if (singularForeignTable.endsWith('ies') &&
             singularForeignTable.length > 3) {
           singularForeignTable =
-              singularForeignTable.substring(
+              '${singularForeignTable.substring(
                 0,
                 singularForeignTable.length - 3,
-              ) +
-              'y';
+              )}y';
         } else {
           singularForeignTable = singularForeignTable.substring(
             0,
@@ -633,5 +680,4 @@ class ClientManagerBase<TModel extends TetherModel<TModel>>
     return camelCase;
   }
 
-  // ... other methods like _executeSelect, _executeInsert, etc.
 }

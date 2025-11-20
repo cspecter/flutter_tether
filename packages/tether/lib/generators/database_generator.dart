@@ -502,31 +502,55 @@ class SqliteDatabaseGenerator {
       "import './$_nativeFileName' if (dart.library.html) './$_webFileName' as platform_db;",
     );
     buffer.writeln();
+    buffer.writeln('/// Initializes the platform-specific database instance.');
+    buffer.writeln('/// This should be called once at application startup, before the app is run.');
+    buffer.writeln('///');
+    buffer.writeln('/// The returned [$_interfaceClassName] instance should then be passed into a `ProviderScope`');
+    buffer.writeln('/// override to make the database available to the rest of the application.');
+    buffer.writeln('///');
+    buffer.writeln('/// ### Example (`main.dart`):');
+    buffer.writeln('/// ```dart');
+    buffer.writeln('/// Future<void> main() async {');
+    buffer.writeln('///   WidgetsFlutterBinding.ensureInitialized();');
+    buffer.writeln('///');
+    buffer.writeln('///   // Initialize the database');
+    buffer.writeln('///   final db = await initializeDatabase();');
+    buffer.writeln('///');
+    buffer.writeln('///   runApp(');
+    buffer.writeln('///     ProviderScope(');
+    buffer.writeln('///       overrides: [');
+    buffer.writeln('///         databaseProvider.overrideWithValue(db),');
+    buffer.writeln('///       ],');
+    buffer.writeln('///       child: const MyApp(),');
+    buffer.writeln('///     ),');
+    buffer.writeln('///   );');
+    buffer.writeln('/// }');
+    buffer.writeln('/// ```');
+    buffer.writeln('Future<$_interfaceClassName> initializeDatabase() async {');
+    buffer.writeln('  final dbInstance = platform_db.getDatabase();');
+    buffer.writeln('  await dbInstance.initialize();');
+    buffer.writeln('  return dbInstance;');
+    buffer.writeln('}');
+    buffer.writeln();
     buffer.writeln(
       '/// Riverpod provider for accessing the application\'s database.',
     );
     buffer.writeln(
-      '/// Returns an instance of [$_interfaceClassName], implemented differently for native and web.',
+      '/// This provider must be overridden in a `ProviderScope` at the root of the app.',
+    );
+    buffer.writeln(
+      '/// See [initializeDatabase] for a complete example.',
     );
     if (config.useRiverpod) {
       buffer.writeln(
-        'final databaseProvider = FutureProvider<$_interfaceClassName>((ref) async {',
+        'final databaseProvider = Provider<$_interfaceClassName>((ref) {',
       );
       buffer.writeln(
-        '  final dbInstance = platform_db.getDatabase(); // Resolved by conditional import',
-      );
-      buffer.writeln('  await dbInstance.initialize();');
-      buffer.writeln();
-      buffer.writeln(
-        '  ref.onDispose(() async { // Ensure database is closed when provider is disposed',
+        '  // This should not be reached. The provider is meant to be overridden.',
       );
       buffer.writeln(
-        '    print("INFO: Disposing databaseProvider, closing database connection...");',
+        '  throw UnimplementedError(\'The databaseProvider must be overridden in the ProviderScope\');',
       );
-      buffer.writeln('    await dbInstance.close();');
-      buffer.writeln('  });');
-      buffer.writeln();
-      buffer.writeln('  return dbInstance;');
       buffer.writeln('});');
     } else {
       // ... (non-Riverpod placeholder)

@@ -104,7 +104,7 @@ import '$databaseProviderPath'; // Provides 'databaseProvider'
 
 final authManagerProvider = Provider<AuthManager<$profileModelClassName>>((ref) {
   final supabaseClient = Supabase.instance.client;
-  final localDb = ref.watch(databaseProvider).requireValue.db; 
+  final localDb = ref.watch(databaseProvider).db; 
   final tableSchemas = globalSupabaseSchema; // Assumes globalSupabaseSchema is directly available via schemaFilePath import
 
   final manager = AuthManager<$profileModelClassName>(
@@ -113,6 +113,7 @@ final authManagerProvider = Provider<AuthManager<$profileModelClassName>>((ref) 
     supabaseProfileTableName: '$supabaseProfileTableName',
     localProfileTableName: '$localProfileTableName',
     profileFromJsonFactory: (json) => $profileModelClassName.fromJson(json),
+    profileFromSqliteFactory: (row) => $profileModelClassName.fromSqlite(row),
     tableSchemas: tableSchemas,
   );
 

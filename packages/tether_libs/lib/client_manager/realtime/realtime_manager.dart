@@ -20,7 +20,7 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
   final List<String> _primaryKeyColumns;
   final String _localTableName;
 
-  RealtimeManagerFilterConfig? _filterConfig;
+  final List<RealtimeManagerFilterConfig> _filterConfigs = [];
   RealtimeManagerOrderConfig? _orderConfig;
   int? _limitConfig;
 
@@ -30,6 +30,7 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
   bool _wasSubscribed = false;
 
   final tether_logger.Logger _log;
+  final Map<String, SupabaseTableInfo> _tableSchemas;
 
   RealtimeManager({
     required SupabaseClient supabaseClient,
@@ -39,6 +40,7 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
     required Map<String, SupabaseTableInfo> tableSchemas,
     String supabaseSchema = 'public',
   }) : _supabaseClient = supabaseClient,
+        _tableSchemas = tableSchemas,
        _localDb = localDb,
        _supabaseSchema = supabaseSchema,
        _supabaseTableName = supabaseTableName,
@@ -64,65 +66,65 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
 
   // --- Configuration Methods ---
   RealtimeManager<TModel> eq(TetherColumn column, Object value) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: value,
       type: RealtimeManagerFilterType.eq,
-    );
+    ));
     return this;
   }
 
   RealtimeManager<TModel> neq(TetherColumn column, Object value) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: value,
       type: RealtimeManagerFilterType.neq,
-    );
+    ));
     return this;
   }
 
   RealtimeManager<TModel> lt(TetherColumn column, Object value) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: value,
       type: RealtimeManagerFilterType.lt,
-    );
+    ));
     return this;
   }
 
   RealtimeManager<TModel> lte(TetherColumn column, Object value) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: value,
       type: RealtimeManagerFilterType.lte,
-    );
+    ));
     return this;
   }
 
   RealtimeManager<TModel> gt(TetherColumn column, Object value) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: value,
       type: RealtimeManagerFilterType.gt,
-    );
+    ));
     return this;
   }
 
   RealtimeManager<TModel> gte(TetherColumn column, Object value) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: value,
       type: RealtimeManagerFilterType.gte,
-    );
+    ));
     return this;
   }
 
   RealtimeManager<TModel> inFilter(TetherColumn column, List<Object> values) {
-    _filterConfig = RealtimeManagerFilterConfig(
+    _filterConfigs.add(RealtimeManagerFilterConfig(
       column: column.originalName,
       value: values,
       type: RealtimeManagerFilterType.inFilter,
-    );
+    ));
     return this;
   }
 
@@ -162,15 +164,21 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
     await _fetchInitialData();
 
     PostgresChangeFilter? realtimeDbFilter;
-    if (_filterConfig != null) {
+    if (_filterConfigs.isNotEmpty) {
+      if (_filterConfigs.length > 1) {
+        _log.warning(
+          'More than one filter is configured. Supabase Realtime only supports a single filter on the subscription. Only the first filter will be applied for live events. The initial data fetch correctly uses all filters.',
+        );
+      }
+      final firstFilter = _filterConfigs.first;
       realtimeDbFilter = PostgresChangeFilter(
-        type: _filterConfig!.type.toSupabaseFilterType(),
-        column: _filterConfig!.column,
-        value: _filterConfig!.value,
+        type: firstFilter.type.toSupabaseFilterType(),
+        column: firstFilter.column,
+        value: firstFilter.value,
       );
     }
 
-    final topic = 'realtime:$_supabaseSchema:$_supabaseTableName';
+    final topic = 'channel_${_supabaseSchema}_$_supabaseTableName';
     _channel = _supabaseClient.channel(topic);
 
     _channel!
@@ -219,8 +227,8 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
       PostgrestFilterBuilder query =
           _supabaseClient.from(_supabaseTableName).select();
 
-      if (_filterConfig != null) {
-        final fc = _filterConfig!;
+      // Apply all configured filters for the initial fetch
+      for (final fc in _filterConfigs) {
         switch (fc.type) {
           case RealtimeManagerFilterType.eq:
             query = query.eq(fc.column, fc.value);
@@ -383,9 +391,10 @@ class RealtimeManager<TModel extends TetherModel<TModel>> {
   Future<void> _upsertModelsToLocalDb(List<TModel> models) async {
     if (models.isEmpty) return;
     try {
-      final statement = ClientManagerSqlUtils.buildUpsertSql(
+      final statement = ClientManagerSqlUtils.buildUpsertSqlForModels(
         models,
         _supabaseTableName,
+        tableSchemas: _tableSchemas, // Pass the tableSchemas map
       );
       final builtSql = statement.build();
       await _localDb.execute(builtSql.sql, builtSql.arguments);

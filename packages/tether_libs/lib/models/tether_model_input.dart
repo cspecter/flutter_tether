@@ -1,13 +1,5 @@
-/// Base class for all input classes used for insert, update, and upsert operations.
-/// 
-/// [T] is the concrete input class type (e.g., BookInput)
-/// [M] is the corresponding model class type (e.g., BookModel)
-abstract class TetherModelInput<T extends TetherModelInput<T, M>, M> {
-  /// Creates a copy of this input with modified fields.
-  ///
-  /// Implementing classes should override this method to provide proper field copying.
-  T copyWith();
-  
+/// Base interface for all input classes used for insert, update, and upsert operations.
+abstract class TetherModelInputBase {
   /// Converts this input to a JSON map for Supabase API.
   /// 
   /// Only includes non-null fields in the output map.
@@ -18,7 +10,19 @@ abstract class TetherModelInput<T extends TetherModelInput<T, M>, M> {
   /// 
   /// Only includes non-null fields in the output map.
   /// Performs appropriate type conversions for SQLite (e.g., bool to int).
-  Map<String, dynamic> toSqliteMap();
+  Map<String, dynamic> toSqliteMap({bool defaultToNull = true});
+}
+
+/// Generic base class for all input classes used for insert, update, and upsert operations.
+/// 
+/// [T] is the concrete input class type (e.g., BookInput)
+/// [M] is the corresponding model class type (e.g., BookModel)
+abstract class TetherModelInput<T extends TetherModelInput<T, M>, M> 
+    implements TetherModelInputBase {
+  /// Creates a copy of this input with modified fields.
+  ///
+  /// Implementing classes should override this method to provide proper field copying.
+  T copyWith();
   
   /// Creates an input instance from a model instance.
   /// 

@@ -39,11 +39,18 @@ import '$databaseProviderPath'; // Provides 'databaseProvider'
 /// It requires an active [SqliteConnection] for the UI isolate, which is
 /// obtained from the `databaseProvider`.
 final backgroundJobManagerProvider = Provider<BackgroundJobManager>((ref) {
-  // Assuming 'databaseProvider' is a FutureProvider<YourAppDbClass>
+  // Assuming 'databaseProvider' is a Provider<YourAppDbClass>
   // and YourAppDbClass has a 'db' getter of type SqliteConnection.
-  final appDatabase = ref.watch(databaseProvider).requireValue;
+  final appDatabase = ref.watch(databaseProvider);
   final dbConnection = appDatabase.db;
   return BackgroundJobManager(db: dbConnection);
+});
+
+/// StreamProvider to watch all background jobs from the local database,
+/// sorted by their creation date in descending order (newest first).
+final watchBackgroundJobsProvider = StreamProvider((ref) {
+  final manager = ref.watch(backgroundJobManagerProvider);
+  return manager.watchAllJobs();
 });
 ''');
 

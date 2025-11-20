@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS background_service_jobs (
     payload TEXT,                               -- JSON string containing arguments for the job
     status TEXT NOT NULL DEFAULT 'PENDING'      -- PENDING, RUNNING, COMPLETED, FAILED
         CHECK(status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+    message TEXT,                               -- Message to the front end.
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,    -- Max number of retries
     last_attempt_at TEXT,                       -- ISO8601 timestamp

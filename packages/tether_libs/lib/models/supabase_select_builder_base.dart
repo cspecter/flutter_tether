@@ -1,4 +1,5 @@
 import 'package:collection/collection.dart';
+import 'package:equatable/equatable.dart';
 import 'package:logging/logging.dart';
 import 'package:tether_libs/client_manager/manager/client_manager_models.dart';
 import 'package:tether_libs/models/table_info.dart';
@@ -17,7 +18,7 @@ import 'package:tether_libs/models/table_info.dart';
 /// This class holds a [builder] for the related table, the [fkConstraintName]
 /// that defines the relationship, and a flag [innerJoin] to specify if an
 /// inner join should be used (relevant for Supabase PostgREST queries).
-class RelatedBuilderLink {
+class RelatedBuilderLink extends Equatable {
   /// The [SelectBuilderBase] for the related table.
   final SelectBuilderBase builder;
 
@@ -35,11 +36,14 @@ class RelatedBuilderLink {
   /// - `builder`: The select builder for the related table.
   /// - `fkConstraintName`: The name of the FK constraint defining the relationship.
   /// - `innerJoin`: Whether to perform an inner join (defaults to `false`).
-  RelatedBuilderLink({
+  const RelatedBuilderLink({
     required this.builder,
     required this.fkConstraintName,
     this.innerJoin = false,
   });
+
+  @override
+  List<Object?> get props => [builder, fkConstraintName, innerJoin];
 }
 
 /// An interface representing a database column, used by generated Supabase builders.
@@ -59,26 +63,18 @@ class RelatedBuilderLink {
 /// }
 /// ```
 abstract class TetherColumn {
-  /// The original column name as it exists in the database (e.g., 'created_at').
-  abstract final String originalName;
+  String get originalName;
+  String get localName;
+  String get tableName;
+  String? get relationshipPrefix;
 
-  /// The name used for the field in the Dart model (e.g., 'createdAt').
-  /// This is often the camelCase version of `originalName`.
-  abstract final String localName;
+  /// Creates a new column reference with a table alias.
+  TetherColumn withAlias(String? alias);
 
-  /// The name of the database table this column belongs to (e.g., 'users').
-  abstract final String tableName;
-
-  /// An optional prefix used when this column is referenced through a relationship.
-  /// For example, if accessing a user's profile `id` via a `posts` table,
-  /// the prefix might be 'user_profile' leading to 'user_profile.id'.
-  abstract final String? relationshipPrefix;
-
-  /// The database column name. Alias for [originalName].
-  String get dbName;
-
-  /// The Dart field name. Alias for [localName].
+  String get dbName =>
+      tableAlias != null ? '$tableAlias."$originalName"' : '"$originalName"';
   String get dartName;
+  String? get tableAlias;
 
   /// The column name qualified with its base table name (e.g., 'users.id').
   /// Useful for disambiguating columns in SQL joins.
@@ -91,8 +87,18 @@ abstract class TetherColumn {
   ///
   /// If `relationshipPrefix` is set, it returns `'relationshipPrefix.dbName'`.
   /// Otherwise, it returns `dbName`.
-  String get fullyQualified =>
-      relationshipPrefix != null ? '$relationshipPrefix.$dbName' : dbName;
+  String fullyQualified(String? prefix) {
+
+    if (prefix == tableName) {
+      // If the prefix is the same as the table name, we don't need to add it.
+      return dbName;
+    } else if (prefix != null && prefix.isNotEmpty) {
+      // If a prefix is provided, use it to qualify the column name.
+      return '$tableName.$originalName';
+    }
+
+    return relationshipPrefix != null ? '$relationshipPrefix.$dbName' : dbName;
+  }
 
   /// Creates a new [TetherColumn] instance that represents this column
   /// as accessed through a named relationship.
@@ -108,39 +114,78 @@ abstract class TetherColumn {
   TetherColumn related(String relationshipName);
 }
 
-/// Base class for constructing Supabase PostgREST select strings and equivalent
-/// SQLite JSON-based select queries.
-///
-/// This class provides a fluent API for:
-/// - Selecting columns from a primary table.
-/// - Adding related tables (one-to-one, one-to-many, many-to-one) with their own column selections.
-/// - Building a PostgREST-compatible select string for fetching nested data.
-/// - Building an SQLite SQL query that constructs a similar nested JSON structure.
-///
-/// It is intended to be extended by generated classes, one for each table in the schema,
-/// which will provide type-safe methods for adding relations and selecting columns.
-///
-/// Example (conceptual usage with a generated `UsersBuilder`):
-/// ```dart
-/// final usersBuilder = UsersBuilder()
-///   .selectAll() // Select all columns from the 'users' table
-///   .addPosts( // Assuming addPosts is a generated method
-///     nestedBuilder: PostsBuilder().selectColumns([PostsColumn.title, PostsColumn.content]),
-///     jsonKey: 'user_posts',
-///   );
-///
-/// final supabaseSelectString = usersBuilder.buildSupabase();
-/// // supabaseSelectString might be: "*,user_posts:posts(title,content)"
-///
-/// final sqliteStatement = usersBuilder.buildSelectWithNestedData();
-/// // sqliteStatement.sql would be a complex SQL query using json_object and json_group_array
-/// ```
+class RelatedColumnRef implements TetherColumn {
+  @override
+  final String originalName;
+  @override
+  final String localName;
+  @override
+  final String tableName;
+  @override
+  final String? relationshipPrefix;
+  @override
+  final String? tableAlias;
+
+  const RelatedColumnRef(
+    this.originalName,
+    this.localName,
+    this.tableName,
+    this.relationshipPrefix, {
+    this.tableAlias,
+  });
+
+  @override
+  String get dartName => localName;
+
+  @override
+  String get dbName =>
+      tableAlias != null ? '$tableAlias."$originalName"' : '"$originalName"';
+
+  @override
+  String get qualified => '$tableName.$originalName';
+
+  @override
+  String fullyQualified(String? prefix) {
+    if (prefix == tableName) {
+      return dbName;
+    } else if (prefix != null && prefix.isNotEmpty) {
+      return '$prefix.$dbName';
+    }
+    return relationshipPrefix != null ? '$relationshipPrefix.$dbName' : dbName;
+  }
+
+  @override
+  TetherColumn related(String relationshipName) {
+    return RelatedColumnRef(
+      originalName,
+      localName,
+      tableName,
+      relationshipName,
+      tableAlias: tableAlias,
+    );
+  }
+
+  @override
+  TetherColumn withAlias(String? alias) {
+    return RelatedColumnRef(
+      originalName,
+      localName,
+      tableName,
+      relationshipPrefix,
+      tableAlias: alias,
+    );
+  }
+}
+
 abstract class SelectBuilderBase {
   final Logger _logger = Logger('SupabaseSelectBuilderBase');
 
   /// The unique key (often primary key name) of the primary table for this builder.
   /// Example: 'id'.
   final String primaryTableKey;
+
+  /// The alias for the primary table in SQL queries (e.g., 't0').
+  final String tableAlias;
 
   /// Schema information for the primary table this builder operates on.
   final SupabaseTableInfo currentTableInfo;
@@ -167,6 +212,7 @@ abstract class SelectBuilderBase {
   SelectBuilderBase({
     required this.primaryTableKey,
     required this.currentTableInfo,
+    this.tableAlias = 't0',
   }) {
     if (primaryTableKey != currentTableInfo.uniqueKey &&
         currentTableInfo.uniqueKey.isNotEmpty) {
@@ -341,19 +387,17 @@ abstract class SelectBuilderBase {
   /// and `OFFSET` clauses should be added to this statement by other builder methods
   /// before execution.
   SqlStatement buildSelectWithNestedData() {
-    final mainTableAlias = 't0'; // Alias for the primary table of this builder
-
     // Recursively build the JSON structure starting from this builder
-    final String topLevelJsonString = _buildRecursiveJson(mainTableAlias, 0);
+    final String topLevelJsonString = _buildRecursiveJson(tableAlias, 0);
 
     // The final SQL will select this JSON structure.
-    // The actual FROM clause and any WHERE, ORDER BY, LIMIT, OFFSET will be
-    // determined by the ClientManager or a more specific query builder that uses this.
+    // The alias 'AS jsobjects' is NOT added here. It should be added by the
+    // final query executor if needed, allowing this method to be used for subqueries.
     return SqlStatement(
       operationType: SqlOperationType.select,
       tableName: primaryTableName, // Base table for the main FROM clause
-      selectColumns: '$topLevelJsonString AS jsobjects', // The JSON result
-      fromAlias: mainTableAlias, // Alias for the main table in the FROM clause
+      selectColumns: topLevelJsonString, // The JSON result, without an alias
+      fromAlias: tableAlias, // Alias for the main table in the FROM clause
       // Other parts like where, orderBy, limit, offset are typically added later
     );
   }
@@ -541,65 +585,17 @@ abstract class SelectBuilderBase {
   }
 }
 
-/// A concrete implementation of [TetherColumn] used to represent a column
-/// when it's referenced through a relationship (i.e., with a `relationshipPrefix`).
-///
-/// This class is typically instantiated by the `related()` method of a
-/// generated `SupabaseColumn` enum/class.
-class RelatedColumnRef implements TetherColumn {
-  @override
-  final String originalName;
-  @override
-  final String localName;
-  @override
-  final String tableName;
-  @override
-  final String? relationshipPrefix;
-
-  /// Creates a [RelatedColumnRef].
+extension SelectBuilderBaseAlias on SelectBuilderBase {
+  /// Returns the table alias for the main table being selected.
   ///
-  /// - `originalName`: The actual database column name.
-  /// - `localName`: The Dart model field name.
-  /// - `tableName`: The name of the table where this column is originally defined.
-  /// - `relationshipPrefix`: The prefix indicating the path/relationship through which
-  ///   this column is being accessed (e.g., "author" if accessing author.name).
-  const RelatedColumnRef(
-    this.originalName,
-    this.localName,
-    this.tableName,
-    this.relationshipPrefix,
-  );
-
-  @override
-  String get dbName => originalName;
-
-  @override
-  String get dartName => localName;
-
-  @override
-  String get qualified => '$tableName.$originalName';
-
-  @override
-  String get fullyQualified =>
-      relationshipPrefix != null ? '$relationshipPrefix.$dbName' : dbName;
-
-  /// Creates a further nested [RelatedColumnRef].
-  ///
-  /// This allows chaining `related()` calls to define paths to columns in
-  /// deeply nested related tables. The `relationshipName` is prepended to the
-  /// existing `relationshipPrefix`.
-  ///
-  /// - `relationshipName`: The next part of the relationship path.
-  ///
-  /// Returns a new [RelatedColumnRef] with an updated `relationshipPrefix`.
-  @override
-  TetherColumn related(String relationshipName) {
-    // Prepend the new relationship name to the existing prefix.
-    final newPrefix =
-        relationshipPrefix != null
-            ? '$relationshipName.$relationshipPrefix'
-            : relationshipName;
-    return RelatedColumnRef(originalName, localName, tableName, newPrefix);
+  /// This implementation simply returns the `tableAlias` property of the
+  /// [SelectBuilderBase].  If you need more complex alias resolution (e.g.,
+  /// for JOINs or subqueries), you would override this in subclasses to check
+  /// for specific table names and return the correct alias from a more
+  /// comprehensive tracking mechanism within your builder.
+  String? getAliasForTable(String tableName) {
+    // For this base implementation, we only handle the main table's alias.
+    return tableName == primaryTableName ? tableAlias : null;
   }
 }
 

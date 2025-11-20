@@ -447,50 +447,67 @@ class SchemaReader {
   ) async {
     if (_connection == null) {
       throw StateError(
-        'Database connection not initialized. Call connect() first.',
+        'Database connection not initialized. Call connect() before reading columns.',
       );
     }
-    _logger.fine('Reading columns for $schema.$tableName');
-    final columns = <TetherColumnInfo>[];
 
-    final columnsResult = await _connection!.execute(
-      Sql.named(
-        'SELECT DISTINCT ON (c.column_name) '
-        '  c.column_name, ' // Index 0
-        '  c.data_type, ' // Index 1
-        '  c.is_nullable, ' // Index 2 ('YES' or 'NO')
-        '  c.column_default, ' // Index 3
-        '  col_description(pgc.oid, c.ordinal_position) as column_comment, ' // Index 4
-        '  (EXISTS (SELECT 1 FROM information_schema.table_constraints tc '
-        '           JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name AND tc.constraint_schema = ccu.constraint_schema '
-        '           WHERE tc.table_schema = c.table_schema AND tc.table_name = c.table_name '
-        '             AND ccu.column_name = c.column_name AND tc.constraint_type = \'PRIMARY KEY\')) as is_primary_key, ' // Index 5 (bool)
-        '  (EXISTS (SELECT 1 FROM information_schema.table_constraints tc '
-        '           JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name AND tc.constraint_schema = ccu.constraint_schema '
-        '           WHERE tc.table_schema = c.table_schema AND tc.table_name = c.table_name '
-        '             AND ccu.column_name = c.column_name AND tc.constraint_type = \'UNIQUE\')) as is_unique, ' // Index 6 (bool)
-        '  c.is_identity, ' // <<< ADDED: Index 7 ('YES' or 'NO')
-        // The on_delete_action was previously at Index 7, it will now be Index 8 if you keep it.
-        // Or remove it if it's truly not used by SupabaseColumnInfo.
-        '  (SELECT rc.delete_rule '
-        '   FROM information_schema.referential_constraints rc '
-        '   JOIN information_schema.key_column_usage kcu ON rc.constraint_name = kcu.constraint_name AND rc.constraint_schema = kcu.constraint_schema '
-        '   WHERE kcu.table_schema = c.table_schema '
-        '     AND kcu.table_name = c.table_name '
-        '     AND kcu.column_name = c.column_name '
-        '   LIMIT 1) as on_delete_action ' // Now Index 8 (if kept)
-        'FROM information_schema.columns c '
-        'JOIN pg_catalog.pg_class pgc ON pgc.relname = c.table_name AND pgc.relnamespace = (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = c.table_schema) '
-        'WHERE c.table_schema = @schema AND c.table_name = @tableName '
-        'ORDER BY c.column_name, c.ordinal_position',
-      ),
-      parameters: {'schema': schema, 'tableName': tableName},
+    // This query now correctly identifies array types like 'text[]' or 'integer[]'
+    // instead of just 'ARRAY'. It also fetches identity column information.
+    final result = await _connection!.execute(
+      Sql.named(r'''
+      SELECT
+          c.column_name,
+          CASE 
+              WHEN c.data_type = 'ARRAY' THEN 
+                  ltrim(c.udt_name, '_') || '[]'
+              WHEN c.data_type = 'USER-DEFINED' AND c.udt_name = 'geometry' THEN
+                  'geometry'
+              ELSE 
+                  c.data_type 
+          END AS data_type,
+          c.is_nullable,
+          c.column_default,
+          d.description,
+          (
+              SELECT COUNT(tc.constraint_name) > 0
+              FROM information_schema.key_column_usage AS kcu
+              JOIN information_schema.table_constraints AS tc
+              ON kcu.constraint_name = tc.constraint_name
+              WHERE kcu.table_schema = c.table_schema 
+              AND kcu.table_name = c.table_name
+              AND kcu.column_name = c.column_name
+              AND tc.constraint_type = 'PRIMARY KEY'
+          ) AS is_primary_key,
+          (
+              SELECT COUNT(tc.constraint_name) > 0
+              FROM information_schema.key_column_usage AS kcu
+              JOIN information_schema.table_constraints AS tc
+              ON kcu.constraint_name = tc.constraint_name
+              WHERE kcu.table_schema = c.table_schema 
+              AND kcu.table_name = c.table_name
+              AND kcu.column_name = c.column_name
+              AND tc.constraint_type = 'UNIQUE'
+          ) AS is_unique,
+          c.is_identity
+      FROM information_schema.columns AS c
+      LEFT JOIN pg_catalog.pg_statio_all_tables AS st
+          ON c.table_schema = st.schemaname AND c.table_name = st.relname
+      LEFT JOIN pg_catalog.pg_description AS d
+          ON st.relid = d.objoid AND c.ordinal_position = d.objsubid
+      WHERE c.table_schema = @schema AND c.table_name = @tableName
+      ORDER BY c.ordinal_position;
+      '''),
+      parameters: {
+        'schema': schema,
+        'tableName': tableName,
+      },
     );
 
-    for (final columnRow in columnsResult) {
-      columns.add(TetherColumnInfo.fromRow(columnRow, StringUtils.toCamelCase));
-    }
-    return columns;
+    return result
+        .map(
+          (row) => TetherColumnInfo.fromRow(row, StringUtils.toCamelCase),
+        )
+        .toList();
   }
 
   // --- Helper Function: _readTableForeignKeys ---

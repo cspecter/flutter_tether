@@ -261,13 +261,10 @@ class UserPreferencesManager {
 
     // --- Riverpod Provider ---
     if (config.useRiverpod) {
-      buffer.writeln('/// Riverpod provider for [UserPreferencesManager].');
       buffer.writeln(
         'final userPreferencesManagerProvider = Provider<UserPreferencesManager>((ref) {',
       );
-      buffer.writeln(
-        '  final database = ref.watch(databaseProvider).requireValue;',
-      );
+      buffer.writeln('  final database = ref.watch(databaseProvider);');
       buffer.writeln('  return UserPreferencesManager(database.db);');
       buffer.writeln('});');
     }

@@ -140,6 +140,7 @@ abstract class TetherModel<T> {
   ///
   /// Example for a `User` model:
   /// ```dart
+  /// @override
   /// User copyWith({String? name, int? age}) {
   ///   return User(
   ///     name: name ?? this.name,
@@ -148,7 +149,7 @@ abstract class TetherModel<T> {
   ///   );
   /// }
   /// ```
-  T copyWith(/* Specific named, optional parameters defined in subclass */);
+  T copyWith();
 
   /// Provides a string representation of the model instance.
   /// It is recommended that subclasses override this to provide a meaningful output.
@@ -232,8 +233,8 @@ class _GenericTetherModel extends TetherModel<dynamic> {
   ///
   /// If `newData` is provided, its key-value pairs will overwrite those in the current `data`.
   @override
-  _GenericTetherModel copyWith({Map<String, dynamic>? newData}) {
-    return _GenericTetherModel({...data, ...?newData});
+  _GenericTetherModel copyWith() {
+    return _GenericTetherModel(Map.from(data));
   }
 
   @override
@@ -259,7 +260,7 @@ class _GenericTetherModelInput implements TetherModelInput<_GenericTetherModelIn
   }
   
   @override
-  Map<String, dynamic> toSqliteMap() {
+  Map<String, dynamic> toSqliteMap({bool defaultToNull = true}) {
     return Map<String, dynamic>.from(data);
   }
   

@@ -73,7 +73,7 @@ class $className extends ClientManager<$modelClassName> {
     if (config.useRiverpod) {
       buffer.writeln('''
 final $providerName = Provider<$className>((ref) {
-  final database = ref.watch(databaseProvider).requireValue;
+  final database = ref.watch(databaseProvider);
 
   return $className(
     localDb: database.db,
@@ -86,14 +86,11 @@ final $providerName = Provider<$className>((ref) {
 
 final ${table.localName.camelCase}FeedProvider = StreamNotifierProvider.autoDispose.family<
   FeedStreamNotifier<$modelClassName>, // NotifierT: Your notifier class
-  List<$modelClassName>, // StateT: The type of data the stream emits
+  FeedStreamState<$modelClassName>, // StateT: The type of data the stream emits (updated to use FeedStreamState)
   FeedStreamNotifierSettings<
     $modelClassName
   > // ArgT: The type of the settings argument
->(() {
-  // Instantiate the notifier and return it
-  return FeedStreamNotifier<$modelClassName>();
-});
+>(FeedStreamNotifier.new);
 ''');
     } else {
       buffer.writeln('''

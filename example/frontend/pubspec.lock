@@ -265,7 +265,7 @@ packages:
       path: "../../packages/tether"
       relative: true
     source: path
-    version: "1.1.2"
+    version: "1.4.3"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
@@ -343,6 +343,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.5.3+2"
+  intl:
+    dependency: transitive
+    description:
+      name: intl
+      sha256: "3df61194eb431efc39c4ceba583b95633a403f46c9fd341e550ce0bfa50e9aa5"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.20.2"
   io:
     dependency: transitive
     description:
@@ -872,10 +880,10 @@ packages:
     dependency: "direct main"
     description:
       name: tether_libs
-      sha256: acb4494ccece136cd271e42e70c617f19e8e0c438ffb3b74a856524c5267b823
+      sha256: "46396512ca8330e775e9cf68231b6d3b7f1420d0797d9309f6a7763cb2157f37"
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.2"
+    version: "1.4.5"
   typed_data:
     dependency: transitive
     description:

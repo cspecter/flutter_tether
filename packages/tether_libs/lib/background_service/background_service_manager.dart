@@ -108,6 +108,19 @@ class BackgroundJobManager {
     return results.map((map) => BackgroundJob.fromMap(map)).toList();
   }
 
+  /// Watches all jobs in the database, emitting a new list whenever the
+  /// `background_service_jobs` table changes.
+  ///
+  /// Jobs are sorted by creation date, with the newest jobs first.
+  Stream<List<BackgroundJob>> watchAllJobs() {
+    final stream = db.watch(
+      "SELECT * FROM background_service_jobs ORDER BY created_at DESC",
+    );
+    return stream.map(
+      (results) => results.map((map) => BackgroundJob.fromMap(map)).toList(),
+    );
+  }
+
   /// Updates the status of a specific job.
   ///
   /// - [id]: The ID of the job to update.
@@ -122,6 +135,24 @@ class BackgroundJobManager {
     final ResultSet result = await db.execute(
       "UPDATE background_service_jobs SET status = ?, last_error = ?, last_attempt_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'NOW') WHERE id = ?",
       [newStatus.name.toUpperCase(), lastError, id],
+    );
+    return result.length;
+  }
+
+  /// Updates the status and message for all jobs with a specific jobKey.
+  ///
+  /// - [jobKey]: The key of the jobs to update.
+  /// - [newStatus]: The new [BackgroundJobStatus].
+  /// - [message]: The new message for the jobs.
+  /// Returns the number of rows affected.
+  Future<int> updateJobStatusByJobKey(
+    String jobKey,
+    BackgroundJobStatus newStatus, {
+    required String message,
+  }) async {
+    final ResultSet result = await db.execute(
+      "UPDATE background_service_jobs SET status = ?, message = ? WHERE job_key = ?",
+      [newStatus.name.toUpperCase(), message, jobKey],
     );
     return result.length;
   }
@@ -178,6 +209,21 @@ class BackgroundJobManager {
     final ResultSet result = await db.execute(query, params);
     return result.length;
   }
+  
+  Future<int> deleteJobsByPriority(int priority, {
+    DateTime? olderThan,
+  }) async {
+    String query = "DELETE FROM background_service_jobs WHERE priority <= ?";
+    final params = <Object?>[priority];
+
+    if (olderThan != null) {
+      query += " AND created_at < ?";
+      params.add(olderThan.toIso8601String());
+    }
+
+    final ResultSet result = await db.execute(query, params);
+    return result.length;
+  }
 
   /// Gets the count of jobs with a specific status.
   Future<int> getJobCountByStatus(BackgroundJobStatus status) async {
@@ -203,7 +249,7 @@ class BackgroundJobManager {
   Future<void> enqueueJob({
     required String jobKey,
     Map<String, dynamic>? payload,
-    int priority = 0,
+    int priority = 1,
     int maxAttempts = 3,
   }) async {
     try {

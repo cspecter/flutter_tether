@@ -746,6 +746,10 @@ class SupabaseTableInfo {
   /// A list of [SupabaseIndexInfo] objects representing the indexes on this table.
   final List<SupabaseIndexInfo> indexes;
 
+  /// A list of [SupabaseIndexInfo] objects representing the unique constraints on this table.
+  /// This is typically derived from unique indexes.
+  final List<SupabaseIndexInfo> uniqueConstraints;
+
   /// The comment associated with the table in the database, if any.
   final String? comment;
 
@@ -767,7 +771,9 @@ class SupabaseTableInfo {
     required this.indexes,
     this.comment,
     this.reverseRelations = const [],
-  }) : localName = localName ?? _makeSafeDartClassName(originalName) {
+  })  : localName = localName ?? _makeSafeDartClassName(originalName),
+        uniqueConstraints =
+            indexes.where((index) => index.isUnique).toList() {
     _setJoinTableNames();
   }
 
@@ -794,19 +800,17 @@ class SupabaseTableInfo {
 
   /// Converts this [SupabaseTableInfo] instance to a JSON map for serialization.
   Map<String, dynamic> toJson() => {
-    'name': name,
-    'originalName': originalName,
-    'localName': localName,
-    'schema': schema,
-    'columns': columns.map((c) => c.toJson()).toList(),
-    'foreignKeys': foreignKeys.map((fk) => fk.toJson()).toList(),
-    'indexes': indexes.map((idx) => idx.toJson()).toList(),
-    'comment': comment,
-    'reverseRelations':
-        reverseRelations
-            .map((rr) => rr.toJson())
-            .toList(), // <<< ADDED TO toJson
-  };
+        'name': name,
+        'originalName': originalName,
+        'localName': localName,
+        'schema': schema,
+        'columns': columns.map((c) => c.toJson()).toList(),
+        'foreignKeys': foreignKeys.map((fk) => fk.toJson()).toList(),
+        'indexes': indexes.map((idx) => idx.toJson()).toList(),
+        'comment': comment,
+        'reverseRelations':
+            reverseRelations.map((rr) => rr.toJson()).toList(),
+      };
 
   /// Creates a [SupabaseTableInfo] instance from a JSON map (deserialization).
   /// Handles missing fields from older data formats with default values.
@@ -814,43 +818,25 @@ class SupabaseTableInfo {
     final originalName =
         json['originalName'] as String? ?? json['name'] as String? ?? '';
     return SupabaseTableInfo(
-      name: json['name'] as String? ?? '',
+      name: json['name'] as String? ?? originalName,
       originalName: originalName,
-      localName:
-          json['localName'] as String? ?? _makeSafeDartClassName(originalName),
-      schema: json['schema'] as String? ?? '',
-      columns:
-          (json['columns'] as List?)
-              ?.map((c) => TetherColumnInfo.fromJson(c as Map<String, dynamic>))
-              .toList() ??
-          [],
-      foreignKeys:
-          (json['foreignKeys'] as List?)
-              ?.map(
-                (fk) => SupabaseForeignKeyConstraint.fromJson(
-                  fk as Map<String, dynamic>,
-                ),
-              )
-              .toList() ??
-          [],
-      indexes:
-          (json['indexes'] as List?)
-              ?.map(
-                (idx) =>
-                    SupabaseIndexInfo.fromJson(idx as Map<String, dynamic>),
-              )
-              .toList() ??
-          [],
+      localName: json['localName'] as String?,
+      schema: json['schema'] as String? ?? 'public',
+      columns: (json['columns'] as List<dynamic>? ?? [])
+          .map((c) => TetherColumnInfo.fromJson(c as Map<String, dynamic>))
+          .toList(),
+      foreignKeys: (json['foreignKeys'] as List<dynamic>? ?? [])
+          .map((fk) =>
+              SupabaseForeignKeyConstraint.fromJson(fk as Map<String, dynamic>))
+          .toList(),
+      indexes: (json['indexes'] as List<dynamic>? ?? [])
+          .map((idx) => SupabaseIndexInfo.fromJson(idx as Map<String, dynamic>))
+          .toList(),
       comment: json['comment'] as String?,
-      reverseRelations:
-          (json['reverseRelations'] as List?) // <<< ADDED TO fromJson
-              ?.map(
-                (rr) => ModelReverseRelationInfo.fromJson(
-                  rr as Map<String, dynamic>,
-                ),
-              )
-              .toList() ??
-          const [],
+      reverseRelations: (json['reverseRelations'] as List<dynamic>? ?? [])
+          .map((rr) =>
+              ModelReverseRelationInfo.fromJson(rr as Map<String, dynamic>))
+          .toList(),
     );
   }
 

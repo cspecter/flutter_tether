@@ -41,6 +41,7 @@ class ClientManager<TModel extends TetherModel<TModel>> {
       localDb: localDb,
       client: client,
       supabase: supabase,
+      baseSupabase: supabase,
       tableSchemas: tableSchemas,
       fromJsonFactory: fromJsonFactory,
       fromSqliteFactory: fromSqliteFactory,
@@ -51,7 +52,6 @@ class ClientManager<TModel extends TetherModel<TModel>> {
     return RpcManager<TModel>(
       supabaseClient: client,
       localDb: localDb,
-      rpcName: tableName,
       targetSupabaseTableName: tableName,
       targetLocalTableName: localTableName,
       fromJsonFactory: fromJsonFactory,

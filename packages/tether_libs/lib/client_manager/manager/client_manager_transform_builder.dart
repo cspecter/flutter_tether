@@ -27,6 +27,7 @@ class ClientManagerTransformBuilder<TModel extends TetherModel<TModel>>
     super.isRemoteOnly,
     super.isLocalOnly,
     super.selectorStatement,
+    required super.baseSupabase,
   }) : super(supabase: supabase);
 
   // Helper to create a new instance with updated state (immutable approach)
@@ -43,6 +44,7 @@ class ClientManagerTransformBuilder<TModel extends TetherModel<TModel>>
       localDb: localDb,
       client: client,
       supabase: supabaseTransformBuilder ?? this.supabase,
+      baseSupabase: baseSupabase,
       tableSchemas: tableSchemas,
       type: type,
       selector: selector,
@@ -73,7 +75,7 @@ class ClientManagerTransformBuilder<TModel extends TetherModel<TModel>>
     bool nullsFirst = false,
   }) {
     final newSupabaseBuilder = supabase.order(
-      column.fullyQualified,
+      column.fullyQualified(tableName),
       ascending: ascending,
       nullsFirst: nullsFirst,
     );
